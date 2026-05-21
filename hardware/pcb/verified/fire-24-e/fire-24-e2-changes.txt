@@ -1,0 +1,15 @@
+Added semi-circle cutout to top of board to help indicate pin 1 side.
+Added silkscreen along this edge.
+
+Small changes to silkscreen around pin headers
+Added +5V and circle around pin header in an attempt to idiot proof against accidental shorts.
+
+Tweaks to track routing.
+Some track sizes changed to closer match connected pads.
+GND polygons changes to look better....
+Some VIA sizes changed (still within JLCPLCB tolerances)
+Some extra Vias and GND plane fill added in places.
+
+Optional D1 LED:
+        Orange XINGLIGHT MFR.Part #XL-1005UOC   JLCPCB Part #C965791
+        Yellow XINGLIGHT MFR.Part #XL-1005UYC   JLCPCB Part #C25503856
