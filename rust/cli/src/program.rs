@@ -189,10 +189,13 @@ async fn reboot_and_rescan(options: &mut Options, reboot_args: &RebootArgs) -> R
     let serial = device.serial.clone();
     reboot(device, reboot_args).await?;
 
-    if options.verbose {
+    if !reboot_args.fast {
         let device =
             select_device(serial.as_deref(), options.unrecognised, &options.vid_pid).await?;
-        println!("{device}");
+        if options.verbose {
+            println!("{device}");
+        }
+        options.device = Some(device);
     }
     Ok(())
 }
@@ -246,7 +249,6 @@ pub async fn cmd_program(
                 return Err(Error::NoDevice);
             }
         }
-            
 
         if !args.batch {
             break;
