@@ -2,6 +2,17 @@
 
 All notables changes between versions are documented in this file.
 
+## v0.6.13 - 2026-06-02
+
+Added:
+- Enhance lab-new to allow reading of any supported ROM type and single build supporting all One ROM sizes.
+- HN62402 (128KBx16/256x8) support for fire-40-a.  Uses 512KB on flash.
+- Support for prototypes fire-28-c and fire-32-b.
+- SST39SF040 support (fire-32-b only).  Uses 512KB on flash.
+
+Fixed:
+- 23C1010 support - there were failures when creating firmware with 23C1010.
+
 ## v0.6.12 - 2026-05-26
 
 Added

@@ -350,6 +350,11 @@
                     "const": "28C512"
                 },
                 {
+                    "description": "128KB mask programmed ROM with fixed active-low CE/OE, plus 2 programmable CS lines - 131072 bytes, 32-pin package",
+                    "type": "string",
+                    "const": "23C1001"
+                },
+                {
                     "description": "128KB mask ROM with fixed active-low CE/OE - 131072 bytes, 32-pin package",
                     "type": "string",
                     "const": "23C1010"
@@ -383,6 +388,11 @@
                     "description": "1MB EPROM with fixed active-low CE/OE - 1048576 bytes, 32-pin package",
                     "type": "string",
                     "const": "27C080"
+                },
+                {
+                    "description": "0.25MB mask programmed EPROM with fixed active-low CE/OE - 262144 bytes, 40-pin package",
+                    "type": "string",
+                    "const": "27C200"
                 },
                 {
                     "description": "0.5MB EPROM with fixed active-low CE/OE - 524288 bytes, 40-pin package",

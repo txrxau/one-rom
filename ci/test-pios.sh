@@ -58,43 +58,43 @@ test_24_all_rom_types() {
     local hw_rev=${1:-fire-24-e}
     local extra_flags=${2:-}
 
-    run_test   $hw_rev images/test/rand_8192.rom trunc,type=2316 3 "$extra_flags"
-    run_test   $hw_rev images/test/rand_8192.rom trunc,type=2332 2 "$extra_flags"
-    run_test   $hw_rev images/test/rand_8192.rom type=2364       1 "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_8192.rom trunc,type=2704   "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_8192.rom trunc,type=2708   "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_8192.rom trunc,type=2716   "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_8192.rom trunc,type=2732   "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_8192.rom trunc,type=28C16   "$extra_flags"
+    run_test   $hw_rev images/test/rand_8KB.rom trunc,type=2316 3 "$extra_flags"
+    run_test   $hw_rev images/test/rand_8KB.rom trunc,type=2332 2 "$extra_flags"
+    run_test   $hw_rev images/test/rand_8KB.rom type=2364       1 "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_8KB.rom trunc,type=2704   "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_8KB.rom trunc,type=2708   "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_8KB.rom trunc,type=2716   "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_8KB.rom trunc,type=2732   "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_8KB.rom trunc,type=28C16   "$extra_flags"
 }
 
 test_28_all_rom_types() {
     local hw_rev=${1:-fire-28-a}
     local extra_flags=${2:-}
 
-    run_test   $hw_rev images/test/rand_65536.rom trunc,type=23128 3 "$extra_flags"
-    run_test   $hw_rev images/test/rand_65536.rom trunc,type=23256 2 "$extra_flags"
-    run_test   $hw_rev images/test/rand_65536.rom type=23512       2 "$extra_flags"
+    run_test   $hw_rev images/test/rand_64KB.rom trunc,type=23128 3 "$extra_flags"
+    run_test   $hw_rev images/test/rand_64KB.rom trunc,type=23256 2 "$extra_flags"
+    run_test   $hw_rev images/test/rand_64KB.rom type=23512       2 "$extra_flags"
     run_test   $hw_rev images/test/rand_128KB.rom type=231024      1 "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_65536.rom trunc,type=2764    "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_65536.rom trunc,type=27128   "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_65536.rom trunc,type=27256   "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_65536.rom type=27512         "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_65536.rom trunc,type=28C64    "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_65536.rom trunc,type=28C256   "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_64KB.rom trunc,type=2764    "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_64KB.rom trunc,type=27128   "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_64KB.rom trunc,type=27256   "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_64KB.rom type=27512         "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_64KB.rom trunc,type=28C64    "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_64KB.rom trunc,type=28C256   "$extra_flags"
 
     # Supported as of 0.6.9
-    run_test   $hw_rev images/test/rand_8192.rom type=2364         1 "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_8192.rom trunc,type=2704    "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_8192.rom trunc,type=2708    "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_8192.rom trunc,type=2716    "$extra_flags"
-    run_no_cs  $hw_rev images/test/rand_8192.rom trunc,type=2732    "$extra_flags"
+    run_test   $hw_rev images/test/rand_8KB.rom type=2364         1 "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_8KB.rom trunc,type=2704    "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_8KB.rom trunc,type=2708    "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_8KB.rom trunc,type=2716    "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_8KB.rom trunc,type=2732    "$extra_flags"
 
     # Supported as of 0.6.11
-    run_test   $hw_rev images/test/rand_65536.rom type=23QL512 1 "$extra_flags"
+    run_test   $hw_rev images/test/rand_64KB.rom type=23QL512 1 "$extra_flags"
 
     # Supported as of 0.6.12
-    run_test   $hw_rev images/test/rand_65536.rom trunc,type=23QL384 1 "$extra_flags"
+    run_test   $hw_rev images/test/rand_64KB.rom trunc,type=23QL384 1 "$extra_flags"
 }
 
 test_32pin() {
@@ -108,6 +108,15 @@ test_32pin() {
     run_no_cs  $hw_rev images/test/rand_512KB.rom type=27C080,cs1=0 "$extra_flags"
     run_no_cs  $hw_rev images/test/rand_512KB.rom type=27C080,cs1=1 "$extra_flags"
     run_no_cs  $hw_rev images/test/rand_512KB.rom type=28C512,trunc "$extra_flags"
+
+    # Supported as of 0.6.13
+    run_no_cs  $hw_rev images/test/rand_512KB.rom type=23C1010,trunc "$extra_flags"
+
+    # Not supported on fire-32-a:
+    if [ "$hw_rev" = "fire-32-a" ]; then
+        return
+    fi
+    run_no_cs  $hw_rev images/test/rand_512KB.rom type=SST39SF040    "$extra_flags"
 }
 
 test_40pin() {
@@ -178,11 +187,12 @@ test_24_all_rom_types fire-24-e
 # Test every ROM type on the first Fire 28 hardware revision.  This tests a
 # single ROM image/set
 test_28_all_rom_types fire-28-a
+test_28_all_rom_types fire-28-b
+test_28_all_rom_types fire-28-c
 
-# The PIO tester doesn't support 32 pin ROMs yet
 test_32pin fire-32-a
+test_32pin fire-32-b
 
-# The PIO tester doesn't support 40 pin ROMs yet
 test_40pin fire-40-a
 test_40pin fire-40-a -DFORCE_16_BIT
 

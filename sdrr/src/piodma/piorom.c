@@ -732,9 +732,9 @@ static void piorom_load_programs(piorom_config_t *config) {
         APIO_LABEL_NEW(ql384_inactive_poll);
         APIO_ADD_INSTR(APIO_JMP_PIN(APIO_LABEL(ql384_inactive_poll)));   // OE=1, so stay inactive until it goes active
 
-        APIO_ADD_INSTR(APIO_MOV_X_PINS);           // Read pins to X - A14 and A15
+        APIO_ADD_INSTR(APIO_MOV_X_PINS);
         APIO_LABEL_NEW_OFFSET(ql384_active, 2);
-        APIO_ADD_INSTR(APIO_JMP_X_NOT_Y(APIO_LABEL(ql384_active))); // If A14 or A15 is low, go active, otherwise stay inactive
+        APIO_ADD_INSTR(APIO_JMP_X_NOT_Y(APIO_LABEL(ql384_active)));
         APIO_ADD_INSTR(APIO_JMP(APIO_LABEL(ql384_inactive_poll)));  // A14 & A15 are both high
 
         // APIO_LABEL(ql384_active)
@@ -852,7 +852,6 @@ static void piorom_load_programs(piorom_config_t *config) {
         if (config->rom_type != CHIP_TYPE_23QL384) {
             APIO_SM_EXECCTRL_SET(0);
         } else {
-            // Use OE as our JMP pin
             APIO_SM_EXECCTRL_SET(APIO_EXECCTRL_JMP_PIN(config->cs_base_pin));
         }
     } else {
@@ -871,15 +870,23 @@ static void piorom_load_programs(piorom_config_t *config) {
         );
     } else {
         // Use A14 and A15 as the CS pins, and they immediate follow OE
+        uint8_t cs_pins = 2;
+        uint8_t cs_base_pin = config->cs_base_pin+1;
+        if (config->cs_base_pin == 11) {
+            // fire-28-c - A14/A15 are not contiguous, so need to read them separately and combine
+            cs_pins = 3;
+            cs_base_pin = 10;
+        }
         APIO_SM_SHIFTCTRL_SET(
-            APIO_IN_COUNT(2) |
+            APIO_OUT_SHIFTDIR_R |       // Required for 23QL384 fire-28-c
+            APIO_IN_COUNT(cs_pins) |
             APIO_IN_SHIFTDIR_L          // Direction left important for non-
                                         // contiguous CS pin handling
         );
         APIO_SM_PINCTRL_SET(
             APIO_OUT_COUNT(config->num_data_pins) |
             APIO_OUT_BASE(base_data_pin) |
-            APIO_IN_BASE(config->cs_base_pin+1)
+            APIO_IN_BASE(cs_base_pin)
         );
     }
 
@@ -893,8 +900,14 @@ static void piorom_load_programs(piorom_config_t *config) {
     }
     if (config->rom_type == CHIP_TYPE_23QL384) {
         // Preload Y with 0b11, the value of A15+A14 when chip should be
-        // inactive
-        APIO_SM_EXEC_INSTR(APIO_SET_Y(0b11));
+        // inactive, if A14:A15 are contiguous.
+        uint8_t set_y_val = 0b11;
+        if (config->cs_base_pin == 11) {
+            // fire-28-c - A15:/OE:A15.  We can assume /OE will still be 0, so
+            // just need to read 3 values and set the middle one to 0 here.
+            set_y_val = 0b101;
+        }
+        APIO_SM_EXEC_INSTR(APIO_SET_Y(set_y_val));
     }
 
     // Jump to start and log
@@ -1225,7 +1238,7 @@ static uint8_t get_lowest_addr_gpio(
     uint8_t chip_pins = info->pins->chip_pins;
 
     for (int ii = 0; ii < 16; ii++) {
-        if ((ii == 0) && (rom_type == CHIP_TYPE_27C400)) {
+        if ((ii == 0) && (rom_type == CHIP_TYPE_27C400 || rom_type == CHIP_TYPE_27C200)) {
             // Skip A-1 pin for 16-bit capable chips, as the algorithm handles
             // the lowest bit (only required in /BYTE low mode) separately.
             continue;
@@ -1245,10 +1258,24 @@ static uint8_t get_lowest_addr_gpio(
             // Consider addr2 pins, but only when serving a > 64KB image, as
             // for 28 pin ROMs, these are only used in this case.
             for (int ii = 0; ii < 8; ii++) {
-                if ((ii == 0) && (rom_type == CHIP_TYPE_27C301)) {
-                    // Ignore A16 for 27C301, as this is actually /OE.
-                    DEBUG("Ignoring A16 (GPIO %d) for 27C301", info->pins->addr2[ii]);
-                    continue;
+                if (rom_type == CHIP_TYPE_27C301) {
+                    if (info->pins->cs2 == 16 && ii == 0) {
+                        // cs2=16 = fire-32-a
+                        // Ignore A16 for 27C301, as this is actually /OE.
+                        DEBUG("Ignoring A16 (GPIO %d) for 27C301", info->pins->addr2[ii]);
+                        continue;
+                    }
+                    if (info->pins->cs2 == 12) {
+                        // fire-32-b
+                        if (ii == 2 || ii == 1) {
+                            // fire-32-b - also ignore A17 and A18
+                            DEBUG("Ignoring A%d (GPIO %d) for 27C301 fire-32-b",
+                                ii+16,
+                                info->pins->addr2[ii]
+                            );
+                            continue;
+                        }
+                    }
                 }
 
                 if (info->pins->addr2[ii] < lowest) {
@@ -1285,6 +1312,10 @@ static uint8_t get_lowest_addr_gpio(
         if (info->pins->ce < lowest) {
             lowest = info->pins->ce;
         }
+    } else if (rom_type == CHIP_TYPE_SST39SF040) {
+        // Add one to the lowest address pin - as the usual A18 is first, but
+        // on this chip type, on fire-32-b, A18 is last
+        lowest += 1; 
     }
 
     return lowest;
@@ -1340,7 +1371,7 @@ static void piorom_finish_config(
 ) {
     const sdrr_rom_info_t *rom = set->roms[0];
     uint8_t is_16_bit_capable = 0;
-    if (rom->rom_type == CHIP_TYPE_27C400) {
+    if (rom->rom_type == CHIP_TYPE_27C400 || rom->rom_type == CHIP_TYPE_27C200) {
         is_16_bit_capable = 1;
         if (runtime->force_16_bit) {
             config->force_16_bit = 1;
@@ -1400,10 +1431,12 @@ static void piorom_finish_config(
             config->num_cs_pins = 1;
             break;
 
+        case CHIP_TYPE_27C200:
         case CHIP_TYPE_27C400:
             config->num_cs_pins = 2;
             break;
 
+        case CHIP_TYPE_SST39SF040:
         case CHIP_TYPE_27C010:
         case CHIP_TYPE_27C020:
         case CHIP_TYPE_27C040:
@@ -1538,8 +1571,10 @@ static void piorom_finish_config(
         case CHIP_TYPE_27512:
         case CHIP_TYPE_27C010:
         case CHIP_TYPE_27C020:
+        case CHIP_TYPE_SST39SF040:
         case CHIP_TYPE_27C040:
         case CHIP_TYPE_27C301:
+        case CHIP_TYPE_27C200:
         case CHIP_TYPE_27C400:
         case CHIP_TYPE_28C16:
         case CHIP_TYPE_28C64:
@@ -1560,11 +1595,11 @@ static void piorom_finish_config(
             } else if (ce_pin == (config->cs_base_pin - 1)) {
                 config->cs_base_pin = ce_pin;
             } else if (ce_pin > (config->cs_base_pin + 1)) {
-                if (rom->rom_type == CHIP_TYPE_27C400) {
-                    // Non-contiguous not supported for 27C400 as the chip
+                if (rom->rom_type == CHIP_TYPE_27C400 || rom->rom_type == CHIP_TYPE_27C200) {
+                    // Non-contiguous not supported for 27C400/200 as the chip
                     // select detect algorithm is more complex, due to the
                     // need to spot /BYTE
-                    ERR("PIO ROM serving non-contiguous OE/CE pins not supported for 27C400");
+                    ERR("PIO ROM serving non-contiguous OE/CE pins not supported for 27C400/200");
                     limp_mode(LIMP_MODE_INVALID_CONFIG);
                 }
                 piorom_handle_non_contiguous_cs_pins(
@@ -1576,8 +1611,8 @@ static void piorom_finish_config(
                 );
             } else {
                 // ce is less than oe
-                if (rom->rom_type == CHIP_TYPE_27C400) {
-                    ERR("PIO ROM serving non-contiguous OE/CE pins not supported for 27C400");
+                if (rom->rom_type == CHIP_TYPE_27C400 || rom->rom_type == CHIP_TYPE_27C200) {
+                    ERR("PIO ROM serving non-contiguous OE/CE pins not supported for 27C400/200");
                     limp_mode(LIMP_MODE_INVALID_CONFIG);
                 }
                 piorom_handle_non_contiguous_cs_pins(
@@ -2066,6 +2101,7 @@ static void piorom_force_unused_addr_pins_to_zero(
             }
             break;
 
+        case CHIP_TYPE_SST39SF040:
         case CHIP_TYPE_27C040:
             // No NC pins - all address lines used.
             break;
@@ -2074,6 +2110,7 @@ static void piorom_force_unused_addr_pins_to_zero(
             // No NC pins - all address lines used.
             break;
 
+        case CHIP_TYPE_27C200:
         case CHIP_TYPE_27C400:
             // No NC pins - all address lines used.
             break;

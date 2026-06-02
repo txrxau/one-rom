@@ -16,7 +16,7 @@
 
 VERSION_MAJOR := 0
 VERSION_MINOR := 6
-VERSION_PATCH := 12
+VERSION_PATCH := 13
 BUILD_NUMBER := 1
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 export VERSION_MAJOR VERSION_MINOR VERSION_PATCH BUILD_NUMBER GIT_COMMIT
@@ -94,8 +94,8 @@ HW_REV ?= fire-24-e
 #
 # See `config` for more extensive examples.
 
-ROM_CONFIGS ?= \
-	file=images/test/0_63_4096.rom,type=2332,cs1=0,cs2=1
+#ROM_CONFIGS ?= \
+#	file=images/test/0_63_4096.rom,type=2332,cs1=0,cs2=1
 
 # Status LED
 #
@@ -436,6 +436,9 @@ endif
 endif
 
 # Exclude metadata
+ifeq ($(EM),1)
+EXCLUDE_METADATA=1
+endif
 ifeq ($(EXCLUDE_METADATA),1)
 ifneq ($(SUPPRESS_OUTPUT),1)
   $(info - $(COLOUR_YELLOW)EXCLUDE_METADATA=$(EXCLUDE_METADATA)$(COLOUR_RESET))

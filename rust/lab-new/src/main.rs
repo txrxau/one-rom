@@ -4,16 +4,12 @@
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
 
 extern crate alloc;
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-
-use alloc::format;
-use alloc::vec::Vec;
 
 use embassy_executor::Spawner;
 use embassy_executor::main as embassy_main;
@@ -23,106 +19,136 @@ use embassy_time::Timer;
 use embedded_alloc::LlffHeap as Heap;
 use panic_rtt_target as _;
 
+use once_cell::sync::OnceCell;
+use static_cell::StaticCell;
+
+use onerom_config::hw::Board;
+use onerom_config::pin_map::BoardPinMap;
+
+mod cli;
 mod error;
 mod hw;
 mod logs;
+mod output;
 mod rom;
+mod usb;
 
-use hw::Board;
-#[cfg(feature = "eprom-16bit")]
-use rom::Rom27C400;
-#[cfg(feature = "eprom-8bit")]
-use rom::RomEprom8;
+use rom::CsPolarities;
 
-const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+static SERIAL_BUF: StaticCell<[u8; 16]> = StaticCell::new();
+pub static SERIAL_ID: OnceCell<&'static str> = OnceCell::new();
+
+// ---------------------------------------------------------------------------
+// Build-time configuration via environment variables
+// ---------------------------------------------------------------------------
+
+const BOARD_STR: Option<&str> = option_env!("BOARD");
+
+const CS1_STR: Option<&str> = option_env!("CS1");
+const CS2_STR: Option<&str> = option_env!("CS2");
+const CS3_STR: Option<&str> = option_env!("CS3");
+
+// ---------------------------------------------------------------------------
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
 #[embassy_main]
-async fn main(_spawner: Spawner) -> ! {
-    // Initialize the heap allocator
+async fn main(spawner: Spawner) -> ! {
+    // Heap
     {
         use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 1024;
+        const HEAP_SIZE: usize = 4096;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         unsafe { HEAP.init(&raw mut HEAP_MEM as usize, HEAP_SIZE) }
     }
 
-    // Init logging
     logs::init_rtt();
 
     info!("-----");
-    info!("One ROM Lab NEW v{}", PKG_VERSION);
+    info!("One ROM Lab v{}", PKG_VERSION);
     info!("Copyright (c) 2026 Piers Finlayson");
-
     info!("-----");
     debug!("RP2350 target");
 
-    // Initialize peripherals with clocks set to 150MHz
+    // Clocks
     let mut config = Config::default();
-    let clocks = ClockConfig::system_freq(150_000_000).expect("Failed to configure clocks");
-    config.clocks = clocks;
-    let _p = embassy_rp::init(config);
-
+    config.clocks = ClockConfig::system_freq(150_000_000).expect("Failed to configure clocks");
+    let p = embassy_rp::init(config);
     debug!("Clocks configured to 150MHz");
 
-    // Get the board object
-    let board = hw::get_board();
+    init_serial_id();
+    debug!("Serial ID: {}", serial_id());
 
-    // Set up the LED
-    let led_pins = board.led_pins();
-    let [mut led] = led_pins;
+    let usb_device = usb::Usb::new(p.USB);
+    usb::run(spawner, usb_device);
 
-    // Flash LED to show we're alive
-    led.set_as_output();
-    for _ in 0..2 {
-        led.set_high();
-        Timer::after_millis(200).await;
-        led.set_low();
-        Timer::after_millis(200).await;
+    // Build the physical-pin → MCU GPIO map for this board
+    let board = BOARD_STR
+        .map(|s| Board::try_from_str(s).unwrap_or_else(|| panic!("Unknown board '{}'", s)));
+    if let Some(board) = board {
+        debug!("Board: {}", board.name());
+        let pin_map = BoardPinMap::new(board);
+
+        // Status LED (optional — some boards have none)
+        let mut led = pin_map.led_gpio().map(hw::steal_gpio);
+        if let Some(ref mut led) = led {
+            led.set_as_output();
+            for _ in 0..2 {
+                led.set_high();
+                Timer::after_millis(200).await;
+                led.set_low();
+                Timer::after_millis(200).await;
+            }
+        }
+    } else {
+        debug!("Board: (not set)");
     }
-
-    // Get the other pins
-    let addr_pins = board.addr_pins();
-    let data_pins = board.data_pins();
-    let cs_pins = board.cs_pins();
-    #[cfg(feature = "eprom-16bit")]
-    let special_pins = board.special_pins();
-
-    // Create the ROM object
-    #[cfg(feature = "eprom-16bit")]
-    let mut rom = Rom27C400::new(addr_pins, data_pins, cs_pins, special_pins);
-    #[cfg(feature = "eprom-8bit")]
-    let mut rom = RomEprom8::new(addr_pins, data_pins, cs_pins);
-    rom.init();
 
     debug!("-----");
 
-    loop {
-        info!("Reading {} ...", rom.type_as_str());
-        let results = rom.read();
-        for r in &results {
-            info!(
-                "{} SHA1: {} checksum: {:#010X}",
-                r.mode,
-                hex::encode(r.sha1),
-                r.checksum
-            );
-        }
-        if results.len() >= 2 {
-            let match_ok = results
-                .windows(2)
-                .all(|w| w[0].sha1 == w[1].sha1 && w[0].checksum == w[1].checksum);
-            info!("Match: {}", match_ok);
-        }
-        let ts_failures = results
-            .iter()
-            .map(|r| format!("{}: {}", r.mode, r.failures))
-            .collect::<Vec<_>>()
-            .join(", ");
-        info!("Tristate failures: {ts_failures}");
-        info!("-----");
-        embassy_time::Timer::after_secs(1).await;
+    let mut state = cli::SessionState::new(board);
+    cli::run(&mut state).await
+}
+
+/// Parse a CS active-level string from an environment variable.
+/// Accepts "high"/"1" (active-high) and "low"/"0" (active-low).
+fn parse_active_level(s: &str, var_name: &str) -> bool {
+    if s.eq_ignore_ascii_case("high") || s == "1" {
+        true
+    } else if s.eq_ignore_ascii_case("low") || s == "0" {
+        false
+    } else {
+        panic!(
+            "{} must be 'high', '1', 'low', or '0', got '{}'",
+            var_name, s
+        )
     }
+}
+
+pub fn cs_polarities() -> CsPolarities {
+    CsPolarities {
+        cs1: CS1_STR.map(|s| parse_active_level(s, "CS1")),
+        cs2: CS2_STR.map(|s| parse_active_level(s, "CS2")),
+        cs3: CS3_STR.map(|s| parse_active_level(s, "CS3")),
+    }
+}
+
+fn init_serial_id() {
+    use embassy_rp::otp;
+    let id = otp::get_chipid().unwrap_or(0);
+    let buf = SERIAL_BUF.init([0u8; 16]);
+    const HEX: &[u8] = b"0123456789ABCDEF";
+    for i in 0..8usize {
+        let byte = (id >> (56 - i * 8)) as u8;
+        buf[i * 2] = HEX[(byte >> 4) as usize];
+        buf[i * 2 + 1] = HEX[(byte & 0xF) as usize];
+    }
+    SERIAL_ID.set(core::str::from_utf8(buf).unwrap()).ok();
+}
+
+pub fn serial_id() -> &'static str {
+    SERIAL_ID.get().copied().expect("serial ID not initialised")
 }

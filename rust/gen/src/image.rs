@@ -636,6 +636,8 @@ impl Chip {
             ChipType::Chip28C512 => 29,
             ChipType::Chip23QL512 => 30,
             ChipType::Chip23QL384 => 31,
+            ChipType::Chip23C1001 => 32,
+            ChipType::Chip27C200 => 33,
         }
     }
 }
@@ -868,7 +870,13 @@ impl ChipSet {
                             2_usize.pow(18)
                         } // 256KB
                         ChipType::Chip23QL384 | ChipType::Chip23QL512 => {
-                            2_usize.pow(17)
+                            // /CE is used as A15 for these chips.  On the fire-28-c,
+                            // /CE is before /OE, hence requires 18 bits
+                            if matches!(board, Board::Fire28A | Board::Fire28B) {
+                                2_usize.pow(17)
+                            } else {
+                                2_usize.pow(18)
+                            }
                         }
                         _ => 2_usize.pow(16), // 64KB
                     }
@@ -1439,9 +1447,15 @@ fn handle_snowflake_chip_types(
         }
     } else if board.chip_pins() == 28 && *chip_type == ChipType::Chip2364 {
         // When serving a 2364 from a 28 pin board, A16 and /CE are transposed
-        let ce_pin = board.bit_ce(ChipType::Chip2764) as usize;
+        let cs_pin = if matches!(board, Board::Fire28A | Board::Fire28B) {
+            // These boards have /CE in the A16 position
+            board.bit_ce(ChipType::Chip2764) as usize
+        } else {
+            // This board has /OE in the A16 position
+            board.bit_oe(ChipType::Chip2764) as usize
+        };
         if let Some(i16) = modified_map.iter().position(|&x| x == Some(16)) {
-            modified_map.swap(i16, ce_pin);
+            modified_map.swap(i16, cs_pin);
         } else {
             panic!(
                 "Address line A16 not found in phys_pin_to_addr_map for 2364-in-28-pin handling"
@@ -1495,15 +1509,43 @@ fn handle_snowflake_chip_types(
     } else if *chip_type == ChipType::Chip27C301 {
         // A16 is an alternate pin
         if let Some(a16_index) = modified_map.iter().position(|&x| x == Some(16)) {
-            if a16_index == 0 {
-                // Remove this entry, and add Some(16) on the end instead.
-                modified_map.remove(0);
-                modified_map.push(Some(16));
-            } else {
-                panic!(
-                    "Address line A16 found at unexpected position {} in phys_pin_to_addr_map for 27C301 handling",
-                    a16_index
-                );
+            match board {
+                Board::Fire32A => {
+                    if a16_index == 0 {
+                        // Remove this entry, and add Some(16) on the end instead.
+                        modified_map.remove(0);
+                        modified_map.push(Some(16));
+                    } else {
+                        panic!(
+                            "Address line A16 found at unexpected position {} in phys_pin_to_addr_map for 27C301 handling",
+                            a16_index
+                        );
+                    }
+                },
+                Board::Fire32B => {
+                    if a16_index == 2 {
+                        // Remove two entries of pin map
+                        modified_map.remove(0);
+                        modified_map.remove(0);
+
+                        // Now add None on the end
+                        modified_map.push(None);
+
+                        // Now put A16 on the end
+                        modified_map.push(Some(16));
+
+                        // Finally, set the old A16 (now index 0) to None
+                        modified_map[0] = None;
+                    } else {
+                        panic!(
+                            "Address line A16 found at unexpected position {} in phys_pin_to_addr_map for 27C301 handling",
+                            a16_index
+                        );
+                    }
+                }
+                _ => {
+                    panic!("Unexpected 32 pin board type");
+                }
             }
         } else {
             panic!("Address line A16 not found in phys_pin_to_addr_map for 27C301 handling");
@@ -1521,9 +1563,21 @@ fn handle_snowflake_chip_types(
         modified_map[oe_pin] = None;
         modified_map[i15] = None;
 
-        // And we start indexing the image from the second address/cs pin, not the first.
+        if matches!(board, Board::Fire28A | Board::Fire28B) {
+            // On these boards we start indexing the image from the second address/cs pin, not the first.
+            modified_map.remove(0);
+            modified_map.push(None);
+        }
+    } else if *chip_type == ChipType::ChipSST39SF040 {
+        if !matches!(board, Board::Fire32B) {
+            panic!("SST39SF040 is not supported on fire-32-a - use 27C040 with a shim");
+        }
+        
+        // On fire-32-b, regular A18 is the first address pin.  Remove it
         modified_map.remove(0);
-        modified_map.push(None);
+
+        // Instead A18 is after the last address pin
+        modified_map.push(Some(18));
     }
     modified_map
 }

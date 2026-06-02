@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use onerom_config::fw::FirmwareVersion;
+use onerom_config::hw::Board;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -446,7 +447,8 @@ fn generate_sdrr_config_header(filename: &Path, config: &Config) -> Result<()> {
     writeln!(file)?;
     writeln!(file, "// MCU variant")?;
     writeln!(file, "{}", config.mcu_variant.define_var_fam())?;
-    if config.board.chip_pins() > 28 {
+    if config.board.chip_pins() > 28 ||
+        matches![config.board, onerom_config::hw::Board::Fire28C] {
         // Special cases for boards which uses RP2350B variant
         writeln!(file, "#define RP2350B        1")?;
     } else {
@@ -854,10 +856,19 @@ fn generate_sdrr_config_implementation(filename: &Path, config: &Config) -> Resu
                 .copied()
                 .max()
                 .ok_or_else(|| anyhow::anyhow!("Board has no pins defined"))?;
-            if pin != max_pin + 1 {
-                return Err(anyhow::anyhow!(
-                    "For 32 pin boards, the alternative pin assignment for 27C301 A16 must be 1 more than the highest defined pin"
-                ));
+            #[allow(clippy::collapsible_if)]
+            if matches!(board, Board::Fire32A) {
+                if pin != max_pin + 1 {
+                    return Err(anyhow::anyhow!(
+                        "For 32 pin boards, the alternative pin assignment for 27C301 A16 must be 1 more than the highest defined pin"
+                    ));
+                }
+            } else if matches!(board, Board::Fire32B) {
+                if pin != max_pin + 2 {
+                    return Err(anyhow::anyhow!(
+                        "For 32 pin boards, the alternative pin assignment for 27C301 A16 must be 2 more than the highest defined pin"
+                    ));
+                }
             }
         } else {
             return Err(anyhow::anyhow!(

@@ -48,13 +48,14 @@ There are also some other inconsistencies between types:
 | 23QL384 |  | 48KB | 16 (A0-A15) | CS1 (pin 22) | None | ✓ |
 | 23512 |  | 64KB | 16 (A0-A15) | CS1 (pin 20), CS2 (pin 22) | None | ✓ |
 | 23QL512 |  | 64KB | 16 (A0-A15) | CS1 (pin 22) | None | ✓ |
-| 231024 | TC531000 | 128KB | 17 (A0-A16) | CS1 (pin 20) | None | ✓ |
+| 231024 | TC531000, 23C1000, 23C1000A, MX23C1000 | 128KB | 17 (A0-A16) | CS1 (pin 20) | None | ✓ |
 
 ## 32-pin Mask ROM Family (23xx)
 
 | Chip Type | Aliases | Size | Address Lines | Control Lines | Programming | Supported |
 |-----------|---------|------|---------------|---------------|-------------|-----------|
-| 23C1010 |  | 128KB | 17 (A0-A16) | /CE (pin 22), /OE (pin 24) | None | ✗ |
+| 23C1001 | D23C1001 | 128KB | 17 (A0-A16) | /CE (pin 22), CS1 (pin 31), CS2 (pin 30), /OE (pin 24) | None | ✓ |
+| 23C1010 |  | 128KB | 17 (A0-A16) | /CE (pin 22), /OE (pin 24) | None | ✓ |
 
 ## 24-pin EPROM Family (27xx)
 
@@ -88,6 +89,7 @@ There are also some other inconsistencies between types:
 
 | Chip Type | Aliases | Size | Address Lines | Control Lines | Programming | Supported |
 |-----------|---------|------|---------------|---------------|-------------|-----------|
+| 27C200 | HN62402 | 256KB | 18 (A0-A17) | /BYTE (pin 31), /CE (pin 10), /OE (pin 12) | None | ✓ |
 | 27C400 | AT27C400, M27C400, 23C4100, MX23C4100, TCS534200, 27C4100, MX27C4100, HN62404, HN62424, MB834200 | 512KB | 19 (A0-A18) | /BYTE (pin 31), /CE (pin 10), /OE (pin 12) | VPP: pin 31 (word_size); /PGM: pin 10 (Acts as /OE) | ✓ |
 
 ## 24-pin EEPROM Family (28Cxx)
@@ -177,61 +179,61 @@ There are also some other inconsistencies between types:
 
 ### 32-pin Package
 
-| Pin | 23C1010 | 28C512 | 27C010 | 27C301 | 27C020 | 27C040 | SST39SF040 | 27C080 |
-|-----|------|------|------|------|------|------|------|------|
-| 1 | NC | NC | VPP | VPP | VPP | VPP | A18 | A19 |
-| 2 | A16 | NC | A16 | /OE | A16 | A16 | A16 | A16 |
-| 3 | A15 | A15 | A15 | A15 | A15 | A15 | A15 | A15 |
-| 4 | A12 | A12 | A12 | A12 | A12 | A12 | A12 | A12 |
-| 5 | A7 | A7 | A7 | A7 | A7 | A7 | A7 | A7 |
-| 6 | A6 | A6 | A6 | A6 | A6 | A6 | A6 | A6 |
-| 7 | A5 | A5 | A5 | A5 | A5 | A5 | A5 | A5 |
-| 8 | A4 | A4 | A4 | A4 | A4 | A4 | A4 | A4 |
-| 9 | A3 | A3 | A3 | A3 | A3 | A3 | A3 | A3 |
-| 10 | A2 | A2 | A2 | A2 | A2 | A2 | A2 | A2 |
-| 11 | A1 | A1 | A1 | A1 | A1 | A1 | A1 | A1 |
-| 12 | A0 | A0 | A0 | A0 | A0 | A0 | A0 | A0 |
-| 13 | D0 | D0 | D0 | D0 | D0 | D0 | D0 | D0 |
-| 14 | D1 | D1 | D1 | D1 | D1 | D1 | D1 | D1 |
-| 15 | D2 | D2 | D2 | D2 | D2 | D2 | D2 | D2 |
-| 16 | GND | GND | GND | GND | GND | GND | GND | GND |
-| 17 | D3 | D3 | D3 | D3 | D3 | D3 | D3 | D3 |
-| 18 | D4 | D4 | D4 | D4 | D4 | D4 | D4 | D4 |
-| 19 | D5 | D5 | D5 | D5 | D5 | D5 | D5 | D5 |
-| 20 | D6 | D6 | D6 | D6 | D6 | D6 | D6 | D6 |
-| 21 | D7 | D7 | D7 | D7 | D7 | D7 | D7 | D7 |
-| 22 | /CE | /CE | /CE | /CE | /CE | /CE+/PGM | /CE | /CE+/PGM |
-| 23 | A10 | A10 | A10 | A10 | A10 | A10 | A10 | A10 |
-| 24 | /OE | /OE | /OE | A16 | /OE | /OE | /OE | /OE+VPP |
+| Pin | 23C1001 | 23C1010 | 28C512 | 27C010 | 27C301 | 27C020 | 27C040 | SST39SF040 | 27C080 |
+|-----|------|------|------|------|------|------|------|------|------|
+| 1 | NC | NC | NC | VPP | VPP | VPP | VPP | A18 | A19 |
+| 2 | A16 | A16 | NC | A16 | /OE | A16 | A16 | A16 | A16 |
+| 3 | A15 | A15 | A15 | A15 | A15 | A15 | A15 | A15 | A15 |
+| 4 | A12 | A12 | A12 | A12 | A12 | A12 | A12 | A12 | A12 |
+| 5 | A7 | A7 | A7 | A7 | A7 | A7 | A7 | A7 | A7 |
+| 6 | A6 | A6 | A6 | A6 | A6 | A6 | A6 | A6 | A6 |
+| 7 | A5 | A5 | A5 | A5 | A5 | A5 | A5 | A5 | A5 |
+| 8 | A4 | A4 | A4 | A4 | A4 | A4 | A4 | A4 | A4 |
+| 9 | A3 | A3 | A3 | A3 | A3 | A3 | A3 | A3 | A3 |
+| 10 | A2 | A2 | A2 | A2 | A2 | A2 | A2 | A2 | A2 |
+| 11 | A1 | A1 | A1 | A1 | A1 | A1 | A1 | A1 | A1 |
+| 12 | A0 | A0 | A0 | A0 | A0 | A0 | A0 | A0 | A0 |
+| 13 | D0 | D0 | D0 | D0 | D0 | D0 | D0 | D0 | D0 |
+| 14 | D1 | D1 | D1 | D1 | D1 | D1 | D1 | D1 | D1 |
+| 15 | D2 | D2 | D2 | D2 | D2 | D2 | D2 | D2 | D2 |
+| 16 | GND | GND | GND | GND | GND | GND | GND | GND | GND |
+| 17 | D3 | D3 | D3 | D3 | D3 | D3 | D3 | D3 | D3 |
+| 18 | D4 | D4 | D4 | D4 | D4 | D4 | D4 | D4 | D4 |
+| 19 | D5 | D5 | D5 | D5 | D5 | D5 | D5 | D5 | D5 |
+| 20 | D6 | D6 | D6 | D6 | D6 | D6 | D6 | D6 | D6 |
+| 21 | D7 | D7 | D7 | D7 | D7 | D7 | D7 | D7 | D7 |
+| 22 | /CE | /CE | /CE | /CE | /CE | /CE | /CE+/PGM | /CE | /CE+/PGM |
+| 23 | A10 | A10 | A10 | A10 | A10 | A10 | A10 | A10 | A10 |
+| 24 | /OE | /OE | /OE | /OE | A16 | /OE | /OE | /OE | /OE+VPP |
 
 ### 40-pin Package
 
-| Pin | 27C400 |
-|-----|------|
-| 1 | A18 |
-| 2 | A8 |
-| 3 | A7 |
-| 4 | A6 |
-| 5 | A5 |
-| 6 | A4 |
-| 7 | A3 |
-| 8 | A2 |
-| 9 | A1 |
-| 10 | /CE+/PGM |
-| 11 | GND |
-| 12 | /OE |
-| 13 | D0 |
-| 14 | D8 |
-| 15 | D1 |
-| 16 | D9 |
-| 17 | D2 |
-| 18 | D10 |
-| 19 | D3 |
-| 20 | D11 |
-| 21 | VCC |
-| 22 | D4 |
-| 23 | D12 |
-| 24 | D5 |
+| Pin | 27C200 | 27C400 |
+|-----|------|------|
+| 1 | NC | A18 |
+| 2 | A8 | A8 |
+| 3 | A7 | A7 |
+| 4 | A6 | A6 |
+| 5 | A5 | A5 |
+| 6 | A4 | A4 |
+| 7 | A3 | A3 |
+| 8 | A2 | A2 |
+| 9 | A1 | A1 |
+| 10 | /CE | /CE+/PGM |
+| 11 | GND | GND |
+| 12 | /OE | /OE |
+| 13 | D0 | D0 |
+| 14 | D8 | D8 |
+| 15 | D1 | D1 |
+| 16 | D9 | D9 |
+| 17 | D2 | D2 |
+| 18 | D10 | D10 |
+| 19 | D3 | D3 |
+| 20 | D11 | D11 |
+| 21 | VCC | VCC |
+| 22 | D4 | D4 |
+| 23 | D12 | D12 |
+| 24 | D5 | D5 |
 
 ## Detailed Pinouts
 
@@ -367,6 +369,23 @@ There are also some other inconsistencies between types:
 | CS1 | 20 | Configurable polarity |
 | VCC | 28 | +5V |
 | GND | 14 | 0V |
+
+### 23C1001 - 128KB mask programmed ROM with fixed active-low CE/OE, plus 2 programmable CS lines
+
+**Package:** 32-pin DIP  
+**Capacity:** 131072 bytes  
+**Control:** 4 configurable CS lines  
+
+| Function | Pins | Notes |
+|----------|------|-------|
+| Address (A0-A16) | 12,11,10,9,8,7,6,5,27,26,23,25,4,28,29,3,2 | 17 address lines |
+| Data (D0-D7) | 13,14,15,17,18,19,20,21 | 8 data lines |
+| CE | 22 | Active low |
+| CS1 | 31 | Configurable polarity |
+| CS2 | 30 | Configurable polarity |
+| OE | 24 | Active low |
+| VCC | 32 | +5V |
+| GND | 16 | 0V |
 
 ### 23C1010 - 128KB mask ROM with fixed active-low CE/OE
 
@@ -655,6 +674,23 @@ There are also some other inconsistencies between types:
 | /PGM | 31 | x during read |
 | VCC | 32 | +5V |
 | GND | 16 | 0V |
+
+### 27C200 - 0.25MB mask programmed EPROM with fixed active-low CE/OE
+
+**Package:** 40-pin DIP  
+**Capacity:** 262144 bytes  
+**Control:** /BYTE, /CE, /OE  
+
+| Function | Pins | Notes |
+|----------|------|-------|
+| Address (A0-A17) | 29,9,8,7,6,5,4,3,2,40,39,38,37,36,35,34,33,32 | 18 address lines |
+| Data (D0-D7) | 13,15,17,19,22,24,26,28,14,16,18,20,23,25,27,29 | 8 data lines |
+| BYTE | 31 | Active low |
+| CE | 10 | Active low |
+| OE | 12 | Active low |
+| VCC | 21 | +5V |
+| GND | 11 | 0V |
+| GND | 30 | 0V |
 
 ### 27C040 - 512KB EPROM with fixed active-low CE/OE
 
