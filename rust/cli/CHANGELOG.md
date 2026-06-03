@@ -1,6 +1,10 @@
 # CLI Changelog
 
-## v0.1.9 - 2026-??-??
+## v0.1.10 - 2026-??-??
+
+- Added more help on size handling when programming or building firmware.
+
+## v0.1.9 - 2026-06-02
 
 - New 28 and 32 pin boards - fire-28-c and fire-32-b.
 

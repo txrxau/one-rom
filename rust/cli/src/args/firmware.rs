@@ -140,6 +140,12 @@ pub struct FirmwareBuildArgs {
     ///
     ///   --slot file=amiga.bin,type=27C400,force_16bit=true
     ///
+    ///   --slot file=undersized.bin,type=2732,size=pad
+    ///
+    ///   --slot file=oversized.bin,type=2732,size=trunc
+    ///
+    ///   --slot file=halfsized.bin,type=2732,size=dup
+    ///
     /// Mutually exclusive with --config-file and --no-config.
     #[arg(
         long,

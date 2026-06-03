@@ -5,6 +5,7 @@
 // One ROM user plugin: NeoPixel smooth colour cycle
 
 #include "plugin.h"
+#include "reg-rp235x.h"
 
 ORA_DEFINE_USER_PLUGIN(
     neopixel_main,
@@ -37,7 +38,8 @@ ORA_DEFINE_USER_PLUGIN(
 #define PAD_SLEW_FAST       (1 << PAD_SLEW_FAST_BIT)
 
 // Change to match your wiring
-#define NEOPIXEL_PIN        44u
+#define NEOPIXEL_PIN_A      29u
+#define NEOPIXEL_PIN_B      44u
 
 // WS2812 nominal pulse widths in nanoseconds
 #define T0H_NS   350u
@@ -127,11 +129,18 @@ void neopixel_main(
     s_t1l = (T1L_NS * mhz) / 1000u;
     s_rst = RST_US * mhz;           // µs × MHz = cycles directly
 
+    // Figure out whether we're an RP235xA or B.
+    uint8_t neopixel_pin = NEOPIXEL_PIN_B;
+    uint8_t rp235xa = SYSINFO_IS_QFN60();
+    if (rp235xa) {
+        neopixel_pin = NEOPIXEL_PIN_A;
+    }
+
     // Configure pin: set function to SIO, drive low, enable output
-    s_pin_mask = 1u << (NEOPIXEL_PIN & 31u);
-    GPIO_PAD(NEOPIXEL_PIN) = PAD_DRIVE(PAD_DRIVE_8MA) | PAD_SLEW_FAST;
-    GPIO_CTRL(NEOPIXEL_PIN) = FUNCSEL_SIO;
-    if (NEOPIXEL_PIN >= 32u) {
+    s_pin_mask = 1u << (neopixel_pin & 31u);
+    GPIO_PAD(neopixel_pin) = PAD_DRIVE(PAD_DRIVE_8MA) | PAD_SLEW_FAST;
+    GPIO_CTRL(neopixel_pin) = FUNCSEL_SIO;
+    if (neopixel_pin >= 32u) {
         s_out_set = &SIO_GPIO_HI_OUT_SET;
         s_out_clr = &SIO_GPIO_HI_OUT_CLR;
         SIO_GPIO_HI_OUT_CLR = s_pin_mask;

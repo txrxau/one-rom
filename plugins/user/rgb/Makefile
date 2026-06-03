@@ -10,8 +10,8 @@
 # Usage:
 #   make
 
-PLUGIN_NAME := user/neo
-PLUGIN_SRC := src/neo_main.c
+PLUGIN_NAME := user/rgb
+PLUGIN_SRC := src/rgb_main.c
 PLUGIN_TYPE := USER
 PLUGIN_SRC_DIR := src
 

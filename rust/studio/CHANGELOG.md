@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.22 - 2026-??-??
+## v0.1.22 - 2026-06-02
 
 - New 28 and 32 pin boards - fire-28-c and fire-32-b.
 

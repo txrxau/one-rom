@@ -67,7 +67,9 @@ ENV TOOLCHAIN="/opt/arm-toolchain/bin"
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/home/build/.cargo/bin:${PATH}"
-RUN cargo install wasm-pack cross cargo-dist
+# Force 0.31.0 as 0.32.0 is broken (#237)
+RUN cargo install cargo-dist --version "=0.31.0"
+RUN cargo install wasm-pack cross
 RUN rustup target install thumbv7em-none-eabihf
 RUN rustup target install \
     x86_64-unknown-linux-gnu \

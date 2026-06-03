@@ -58,6 +58,12 @@ pub struct ProgramArgs {
     ///   --slot file=char.bin,type=2332,cs1=active_low,cs2=active_high,led=off
     ///
     ///   --slot file=amiga.bin,type=27C400,force_16bit=true
+    /// 
+    ///   --slot file=undersized.bin,type=2732,size=pad
+    ///
+    ///   --slot file=oversized.bin,type=2732,size=trunc
+    ///
+    ///   --slot file=halfsized.bin,type=2732,size=dup
     ///
     /// Mutually exclusive with --config-file, --no-config, and --firmware.
     #[arg(
