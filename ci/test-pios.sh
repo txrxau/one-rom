@@ -154,6 +154,7 @@ test_24_config() {
     test_config fire-24-c "$config"
     test_config fire-24-d "$config"
     test_config fire-24-e "$config"
+    test_config fire-24-f "$config"
 }
 
 test_24_config_c_onwards() {
@@ -162,18 +163,22 @@ test_24_config_c_onwards() {
     test_config fire-24-c "$config"
     test_config fire-24-d "$config"
     test_config fire-24-e "$config"
+    test_config fire-24-f "$config"
 }
 
 test_28_config() {
     local config=$1
 
     test_config fire-28-a "$config"
+    test_config fire-28-b "$config"
+    test_config fire-28-c "$config"
 }
 
 test_32_config() {
     local config=$1
 
     test_config fire-32-a "$config"
+    test_config fire-32-b "$config"
 }
 
 # Test every ROM type on every Fire 24 hardware revision.  This tests a single
@@ -183,6 +188,7 @@ test_24_all_rom_types fire-24-b
 test_24_all_rom_types fire-24-c
 test_24_all_rom_types fire-24-d
 test_24_all_rom_types fire-24-e
+test_24_all_rom_types fire-24-f
 
 # Test every ROM type on the first Fire 28 hardware revision.  This tests a
 # single ROM image/set
@@ -195,6 +201,8 @@ test_32pin fire-32-b
 
 test_40pin fire-40-a
 test_40pin fire-40-a -DFORCE_16_BIT
+test_40pin fire-40-b
+test_40pin fire-40-b -DFORCE_16_BIT
 
 # Test specific ROM configurations on all Fire 24 hardware revisions.
 test_24_config old-config/pet-4-40-50.mk
@@ -220,3 +228,4 @@ test_32_config old-config/test/32-random-27c0x0.mk
 
 # Test specific ROM configurations on all Fire 40 hardware revisions.
 test_config fire-40-a old-config/test/40-random.mk
+test_config fire-40-b old-config/test/40-random.mk

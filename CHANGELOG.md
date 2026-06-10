@@ -2,6 +2,11 @@
 
 All notables changes between versions are documented in this file.
 
+## v0.6.14 - 2026-??-??
+
+- Added support for prototypes fire-40-b and fire-24-f.
+- Improved lab-new scripts.
+
 ## v0.6.13 - 2026-06-02
 
 Added:
