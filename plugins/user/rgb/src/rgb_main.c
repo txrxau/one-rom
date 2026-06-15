@@ -5,11 +5,10 @@
 // One ROM user plugin: NeoPixel smooth colour cycle
 
 #include "plugin.h"
-#include "reg-rp235x.h"
 
 ORA_DEFINE_USER_PLUGIN(
     neopixel_main,
-    0, 1, 0, 0,
+    0, 1, 1, 0,
     0, 6, 7
 );
 
@@ -36,6 +35,10 @@ ORA_DEFINE_USER_PLUGIN(
 #define PAD_DRIVE(X)        ((X & PAD_DRIVE_MASK) << PAD_DRIVE_BIT)
 #define PAD_SLEW_FAST_BIT   0
 #define PAD_SLEW_FAST       (1 << PAD_SLEW_FAST_BIT)
+
+#define SYSINFO_BASE        0x40000000
+#define SYSINFO_PACKAGE_SEL     (*((volatile uint32_t *)(SYSINFO_BASE + 0x04)))
+#define SYSINFO_IS_QFN60()      (SYSINFO_PACKAGE_SEL & 0b1)
 
 // Change to match your wiring
 #define NEOPIXEL_PIN_A      29u

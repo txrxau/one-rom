@@ -124,6 +124,7 @@ test_40pin() {
     local extra_flags=${2:-}
 
     run_no_cs  $hw_rev images/test/rand_512KB.rom type=27C400 "$extra_flags"
+    run_no_cs  $hw_rev images/test/rand_256KB.rom type=27C200 "$extra_flags"
 }
 
 run_config() {
