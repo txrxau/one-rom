@@ -1748,9 +1748,8 @@ static void piorom_finish_config(
         // reader pin range (connected to a second pin, like 37)
         config->a_minus_1_pin = 15;
 
-        // !!! Currentlu hardcoded to fire-40-a unused pin, and unused anyway
-        // as the data PIO block can't access this pin.
-        config->a_minus_1_signal_pin = 45;
+        // !!! unused.
+        config->a_minus_1_signal_pin = 255;
     }
 
     // Figure out base data pin from SDRR info
