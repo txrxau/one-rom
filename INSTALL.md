@@ -45,7 +45,7 @@ However, we strongly recommend sticking to a *nix based host (Linux or macOS) fo
         sudo apt -y install gcc-arm-none-eabi
         ```
 
-    Now you will need to update the `TOOLCHAIN` environment variable in your shell or variable in the [Makefile](sdrr/Makefile) to point to the correct compiler binary directory.  It should probably `/usr/bin` or `/opt/arm-gnu-toolchain-14.3.rel1-darwin-arm64-arm-none-eabi/bin` or similar.
+    Now you will need to update the `TOOLCHAIN` environment variable in your shell or variable in the [Makefile](firmware/Makefile) to point to the correct compiler binary directory.  It should probably `/usr/bin` or `/opt/arm-gnu-toolchain-14.3.rel1-darwin-arm64-arm-none-eabi/bin` or similar.
 
     If on an ARM64 host you will also need x86_64-linux-gnu cross tools:
 
@@ -53,10 +53,10 @@ However, we strongly recommend sticking to a *nix based host (Linux or macOS) fo
     sudo apt -y install gcc-x86-64-linux-gnu
     ```
 
-3. Install the following packages required for building and testing.  Of these `vice` and `dfu-util` are optional.  (`vice` is used to build some Commodore demo programs, and `dfu-util` can be used for SWD programming Ice variants.):
+3. Install the following packages required for building and testing.  `vice` is optional.  (`vice` is used to build some Commodore demo programs.):
 
     ```bash
-    sudo apt -y install dfu-util jq libcurl4-openssl-dev libzip-dev libjson-c-dev libudev-dev vice
+    sudo apt -y install jq libcurl4-openssl-dev libzip-dev libjson-c-dev libudev-dev vice
     ```
 
     If you are using a different package manager, the package name may vary slightly, e.g., `libcurl-devel` on Fedora.
@@ -68,11 +68,17 @@ However, we strongly recommend sticking to a *nix based host (Linux or macOS) fo
     ```bash
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
     source $HOME/.cargo/env
-    rustup target install thumbv7em-none-eabihf
-    rustup target install thumbv8m.main-none-eabihf
     cargo install cross
     cargo install wasm-pack   # Only required to build one-rom-wasm
     cargo install cargo-dist  # Only required to build One ROM Studio installers
+    ```
+
+    The One ROM hardware tester (`onerom-lab`) runs on the RP2350 and is built
+    with the nightly toolchain (pinned by its `rust-toolchain.toml`).  You only
+    need this if you are building the tester:
+
+    ```bash
+    rustup toolchain install nightly --component clippy,rustfmt --target thumbv8m.main-none-eabihf
     ```
 
     If planning to build One ROM Studio for all possible targets (you likely only want to build a subset!) you will also need to install additional Rust targets and the mingw-w64 toolchain for Windows targets.  If you just want to build the One ROM firmware you do not need to do this step.
@@ -103,15 +109,13 @@ At this point you can follow the instructions below to build and flash the firmw
 
 ## Building the Firmware
 
-To build the firmware, you use a command like this:
+To build the base firmware, run `make` from the repo root.  Add `DEBUG_LOGGING=1` for debug logging.
+
+To build a firmware image to flash to a One ROM, you use the CLI tool, which you can build from `rust/cli` or download from [One ROM CLI](https://onerom.org/cli).  For example:
 
 ```bash
-scripts/onerom.sh fire-24-d onerom-config/vic20-pal.json
+onerom firmware build --base-firmware firmware/build/onerom-rp235x.bin --config onerom-config/vic20-pal.json /tmp/firmware.bin
 ```
-
-To flash, use `-f`, to include regular and debug logging use `-l` and `-d` respectively.
-
-You can also use make commands as described below, but running make directly has been deprecated in favour of the `scripts/onerom.sh` script.
 
 ## Programming the Firmware
 
@@ -119,11 +123,12 @@ You can also use make commands as described below, but running make directly has
 
 USB is the simplest way to program One ROM if your hardware revision supports.
 
-After building the firmware as above, use the binary from `sdrr/build/sdrr-{MCU}.bin` and one of the following tools to update the firmware of your device.  You have two official One ROM options:
+After building the firmware as above, use the binary from `firmware/build/onerom-rp235x.bin` and one of the following tools to update the firmware of your device.  You have two official One ROM options:
+- [One ROM CLI](https://onerom.org/cli)
 - [One ROM Studio](https://onerom.org/studio)
 - [One ROM Web](https://onerom.org/web)
 
-If both cases, you need to select the option to upload a local firmware binary, and then program it.
+If all cases, you need to select the option to upload a local firmware binary, and then program it.
 
 You also have board specific, third-party, options:
 
@@ -132,23 +137,11 @@ You also have board specific, third-party, options:
 - [pico⚡flash](https://picoflash.org) - A web based RP2040/RP2350 flash by One ROM's author. 
 - [picotool](https://github.com/raspberrypi/picotool) - A command line tool from Raspberry Pi for programming Raspberry Pi RP2040/RP2350-based boards.
 
-As well as `sdrr/build/sdrr-rp2350.bin`, if you have [picotool](https://github.com/raspberrypi/picotool) installed and in your path, a UF2 file is created as part of the build for Fire boards at `sdrr/build/sdrr-rp2350.uf2`.
+As well as `firmware/build/onerom-rp235x.bin`, if you have [picotool](https://github.com/raspberrypi/picotool) installed and in your path, a UF2 file is created as part of the build for Fire boards at `firmware/build/onerom-rp235x.uf2`.
 
 For a factory fresh Fire board, you can copy this UF2 to the RP2350 filesystem that mounts when you plug in the Fire board to program it.
 
 Note that the RP2350 filesystem is not automatically mounted when plugged into USB once you have One ROM firmware v0.6.0+ installed, but you can access it by pulling BOOT to GND on power up to enter this mode.
-
-#### Ice Boards
-
-There are many third-arty options for programming Ice USB boards, which use STM32's DFU mode.
-
-The author sometimes uses [dfu-util](http://dfu-util.sourceforge.net/).  As well as `sdrr/build/sdrr-stm32{MCU}.bin`, a DFU file is also created at `sdrr/build/sdrr-stm32{MCU}.dfu` which can be supplied directly to `dfu-util`.
-
-You can even use the following to build and flash via dfu-util in one step:
-
-```bash
-XXX make dfu-flash
-```
 
 ### SWD Programmer
 
@@ -164,33 +157,9 @@ If you installed `probe-rs`, you can a command like this to build and flash the 
 XXX make run
 ```
 
-Note that as well as `sdrr/build/sdrr-{MCU}.bin`, an ELF file is created at `sdrr/build/sdrr-{MCU}.elf` which can be used with other SWD programming tools, as it contains build symbols.  This is particularly useful for attaching to One ROM with the programmer, after it has been programmed, to view logs. 
+Note that as well as `firmware/build/onerom-rp235x.bin`, an ELF file is created at `firmware/build/onerom-rp235x.elf` which can be used with other SWD programming tools, as it contains build symbols.  This is particularly useful for attaching to One ROM with the programmer, after it has been programmed, to view logs. 
 
 See [Pi-PICO-PROGRAMMER](/docs/PI-PICO-PROGRAMMER.md) for details of using a Raspberry Pi Pico as an inexpensive SWD programmer.  Many other SWD programmers are available, like the Raspberry Pi Debug Probe, generic DAPLink, ST-Link, etc. 
 
-Occassionally your One ROM may lock up, particularly if you are experimenting with overclocking or other advanced configuration options, or debugging firmware changes.  If this is is the case, try rebooting your programmer, One ROM, or both, and try again.  If you still have problems, see [Recovering a Bricked Device](docs/GETTING-STARTED.md#recovering-a-bricked-device) for help.
+Occassionally your One ROM may lock up, particularly if you are experimenting with overclocking or other advanced configuration options, or debugging firmware changes.  If this is is the case, try rebooting your programmer, One ROM, or both, and try again.  If you still have problems, see [Recovering a Bricked Device](docs/old/GETTING-STARTED.md#recovering-a-bricked-device) for help.
 
-## Additional Make Targets
-
-To build and then review the contents of the firmware run:
-
-```bash
-XXX make info
-XXX make info-detail # More details
-```
-
-To perform consistency checking on the firmware run the following:
-
-```bash
-XXX make test
-```
-
-Not all ROM types support this testing.  Please raise an issue if your specific ROM type fails this test.
-
-## Debugging
-
-To enable both high-level logging and debug logging, use the following when building:
-
-```bash
-BOOT_LOGGING=1 DEBUG_LOGGING=1 HW_REV=fire-24-d MCU=rp2350 CONFIG=config/vic20-pal.mk make
-```

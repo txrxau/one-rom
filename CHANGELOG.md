@@ -2,9 +2,171 @@
 
 All notables changes between versions are documented in this file.
 
-## v0.6.14 - 2026-??-??
+## v0.7.1 - 2026-08-09
 
-- Added support for prototypes fire-40-b and fire-24-f.
+Headline changes in this release:
+- Intel HEX ROM input in the programming tools, ihex<->binary conversion in the CLI, and image transforms (byte swap, deinterleave) applied during a build.
+- Two v0.7.0 regressions fixed: the status LED defaulting to off, and valid multi-ROM sets rejected depending on chip order.
+- Image select jumpers B and D fixed on fire-28-c, fire-28-d and fire-32-b, which read the SWDIO select jumper inverted.
+- RBCP (the host-control plugin) works again — the address monitor it builds on was completely broken by the v0.7.0 PIO rewrite — and now supports every ROM type the firmware serves, including 32-pin, 40-pin 16-bit and the 23QL384.
+- GPIO control end to end: plugins, the USB plugin and the CLI can drive a One ROM GPIO, and `onerom control reset` can reset the host system One ROM is installed in.
+- New CLI views of a board's pin header and ROM socket, and of the flash each chip type costs to emulate.
+- One ROM Lens working again, and ported to a Rust/wasm crate.
+- CLI `--serial-override` to set a custom serial number, exposed via the USB plugin.
+- New plugin-API getters for device GPIOs and the exact per-ROM type string.
+- **Breaking:** `onerom boards` is now `onerom board list`, the CLI now refuses Ice (STM32) boards, which it never supported, and `--allow-unsupported-chip-type` is gone.
+- **Breaking:** the CLI's argument conventions are now consistent — no positional arguments, and each short flag means one thing across every command.
+
+In detail:
+
+- Add Intel HEX (ihex) as a ROM image input format.  A chip may set `"format": "ihex"` in a config file (the default remains raw binary), with an optional `"load_address"` — decimal, or `0x`/`$`-prefixed hex — giving the absolute ihex address that maps to byte 0 of the ROM; the CLI exposes the same via `--slot format=ihex,load_address=...`.  Unwritten bytes read as `0xFF`.  Decoding lives in `onerom-gen`, so the CLI, Studio and Web all get it.
+- Add image transforms — byte-level rearrangements applied to a ROM image before it is written into the firmware.  A chip may carry an ordered `"transform"` array, exposed by the CLI as `--slot transform=deinterleave:1/2/2+swap_bytes`.  `swap_bytes` reverses the byte order within each 16-bit word; `deinterleave:<offset>/<stride>[/<bytes>]` extracts one lane from an interleaved image, for a wide ROM set distributed as a single file.  The list is applied in the order given, which matters, and is recorded in the firmware metadata alongside the filename.
+- Add `onerom image deinterleave`, the standalone counterpart to `onerom image swap-bytes` (`--offset`, `--stride`, `--bytes`), for rewriting a file rather than transforming it during a build.  Both share the `onerom-gen` implementation used by `transform=`.  Neither reads Intel HEX; use `onerom image convert` first.
+- Add `onerom image convert` to convert ROM image files between raw binary and Intel HEX (`--from`/`--to`, with `--load-address` for the ihex side).
+- Add GPIO control, end to end.  `onerom control pin` drives a One ROM GPIO high, low or high impedance, optionally for a bounded period timed by the device (`--hold`, `--then`); `onerom control reset` pulses one low to reset the host system One ROM is installed in; `onerom inspect gpio` lists every GPIO with what One ROM is using it for.  `--pin` takes `gpio<N>` or a header pad name (`sel_a` to `sel_e`, `x1`/`x2`).  A GPIO One ROM is itself using is refused unless `--force`, and one that is not 5V-tolerant warns.  The primary use is a wire from a header pad to the machine's reset line, so a script can program an image and then reset the machine into it.  Plugins get the same primitives as `ORA_ID_GPIO_SET` and `ORA_ID_GPIO_QUERY`.  Requires firmware v0.7.1 and the v0.2.1 USB system plugin.
+  - This required a firmware update and a USB plugin update.
+- Add CLI ASCII views of a board's physical pin layouts.  `onerom board header [--board <board>]` draws the pin (jumper / programming) header pad by pad, with the GPIO behind each image-select and X pad and, on Fire boards, whether that GPIO is 5V-tolerant.  `onerom board socket [--board <board>] [--chip-type <chip>] [--gpio]` draws the ROM socket as a DIP pinout — GPIOs, the chip's pin functions, or both.  Where the chip's pin count differs from the board's, the socket is drawn at the larger with the smaller device bottom-justified, marking `overhang` and `(empty)` pins and the `X1`/`X2` fly-lead each overhanging address line needs.  The board is inferred from a connected One ROM when omitted; `onerom inspect header` and `onerom inspect socket` are the device-side forms, and take `--board` to override what the connected One ROM reports.
+- `onerom chips --board <board>` now reports the flash each chip type costs to emulate, which is frequently larger than the chip — a 2364 costs 8KB on a 24-pin board but 256KB overhanging a 28-pin one — grouped by how the chip fits the socket, with `--chip-type <chip>` for a single type.  `board socket --chip-type` and `inspect socket --chip-type` report the same figure.  The listing now covers every chip the board can emulate, and a recognised type it cannot serve is named separately rather than listed as supported.  `docs/COMPATIBILITY.md` and `docs/CLI-MANUAL.md` now legend the Fit column.
+- `onerom-gen` gains `compat::serving_alg_info`, reporting the serving algorithms and the GPIO window the address state machine samples for a chip on a board, derived from configuration alone.
+- Add an optional per-board `jumper_header` descriptor to the board metadata, describing the 2xN pin header column by column with each pad's role, so host tools can draw an accurate diagram per board revision instead of assuming one fixed layout.  `onerom-config` exposes it as `Board::jumper_header()`, and it is cross-checked at build time against the board's electrical data so the two cannot drift apart.  The Fire 24, 28 and 32-pin boards are characterised; Fire 40 and Ice are additive JSON to follow.
+- Add `--serial-override` to set a custom USB serial number, used by the USB plugin while One ROM is running.  A stopped One ROM continues to use the chip ID, the USB stack then being the RP2350 bootrom's; Studio copes with the serial changing across stopped/started, and Web works with either.  Neither Studio nor Web can program an override.
+  - This required a firmware update and a USB plugin update.
+- Turbo boot with more than one non-plugin ROM slot is now a warning under the CLI's `--force`, rather than a hard error.  Only the first slot is served at boot, which is what you want when it holds a bootloader that selects the others itself.
+- The CLI now accepts `--plugin` alongside `--config-file` on `program` and `firmware build`; the plugins are inserted ahead of the config's ROM slots, so a plugin can be added to a stock config without editing it.  It is an error if the config already defines a plugin of its own.
+- `--slot` now accepts every chip type the target firmware can serve on the board, so the overhang and fly-lead combinations `docs/COMPATIBILITY.md` documents — a 2764 on a Fire 24, say — no longer have to be built from a config file.  **Breaking:** `--allow-unsupported-chip-type` is removed, having nothing left to permit.
+- **Breaking change: `onerom boards` is now `onerom board list`.**  There is deliberately no alias, so a script calling `onerom boards` must be updated — the CLI suggests `board` rather than simply failing.  A plural noun taking a singular argument read wrongly, and with three subcommands beneath it the listing deserved a name of its own.
+- Ice (STM32) boards are now listed separately by `onerom board list`, and refused where the CLI cannot use them.  The CLI has never had an STM32 path — every firmware path composes an RP2350 image and every device path speaks picoboot — but a single merged list implied otherwise, and `--board ice-24-d` then failed several layers down as a missing release.  `scan`, `program`, `firmware build`, `firmware download`, `firmware inspect --board`, `control pin`, `control reset` and `inspect gpio` now reject an Ice `--board` up front; the commands that only *describe* hardware still accept them.
+- `onerom inspect gpio` now shows a single `Function` column listing everything a GPIO is, in place of separate `Pad` and `Function` columns.  It names every function where a GPIO carries more than one (on a fire-24-f the status LED and the RGB LED are both GPIO 29, and only the first was listed), no longer claims a GPIO is `SWCLK` or `SWDIO`, and by default lists only the GPIOs connected to something, with `--all` for the rest.  The explanatory legend moves behind `--verbose`.
+- `onerom board socket` and `onerom inspect socket` now say when a board has no GPIO map, instead of drawing the diagram with the GPIO column blank all the way down; `board header` and `inspect header` say `command unsupported` for a board with no pin-header descriptor.
+- **Breaking: the CLI's argument conventions are now consistent across every command.**  No command takes a positional argument — `board header`/`board socket` take `--board` — and each short flag means one thing CLI-wide: `-b` is `--board` (no longer `--byte`), `-o` is `--output` (no longer `--offset`), `-i` is `--input` (no longer `--vid-pid`, which keeps `--id`), `-l` is `--length` (no longer `--slot`), and `-m` is `--msd` (no longer `--image`).  `--board`, `--chip-type`, `--all`, `--force`, `--no-reboot` and `--input`/`--output` gain their short forms on the commands that lacked them.
+- **Breaking: `onerom control erase` now uses `--stopped`/`--running`** for its post-erase reboot mode, matching `reboot` and `program`.  As with `onerom boards`, there is deliberately no alias for the old `--reboot-stopped`/`--reboot-running`.
+- `--config` is now the primary spelling of the ROM configuration file option on `program` and `firmware build`, matching how it is written everywhere else; `--config-file`, `--config-json` and `--json` remain aliases.
+- `onerom image convert` now validates `--from`/`--to` as the command line is parsed, listing the accepted formats in `--help` rather than failing part-way through a conversion.  `--load-address` is likewise parsed up front, by the same code the config file uses.
+- `--slot` keys and values are now documented kebab-case — `size-handling`, `load-address`, `force-16-bit`, `cs1=active-low` — matching the CLI's own argument naming; the snake_case config spellings are all still accepted, and `size-handling` (the one key that only took the snake form) now parses.
+- `--slot` now accepts `cs<n>=ignore`, which a config file always could.  Chip-select values are parsed by the same `onerom-gen` code the config file uses, in place of a second, narrower copy in the CLI: previously `active_low` worked only on the command line and `ignore` only in a config file, and neither parser accepted the full set.
+- Stop hard-wrapping prose in the CLI's console output.  A handful of messages broke a sentence at a fixed width, which the terminal then wrapped again at its own.
+- Fix the status LED defaulting to off on v0.7.0.  It now defaults to on, and is only turned off by a per-slot firmware override that explicitly disables it.  Also fixes the limp-mode LED force-enable, which never fired, so limp-mode error blink patterns did not show when the LED was overridden off.
+  - This required a firmware update.
+- Fix a v0.7.0 regression that rejected valid multi-ROM sets depending on the order of their chips.  A C64 set of Kernal (2364), Character (2332, whose CS2 is set to `ignore`) and Basic (2364) validated with the character ROM last, but was rejected with it in the middle.  The consistency check now anchors on the primary chip and validates each secondary independently, so it accepts every ordering the firmware can serve.  It also now rejects, with clearer messages, multi sets the firmware could not serve.
+- Fix a v0.7.0 regression that left the address monitor — and therefore RBCP and the host-control plugin — completely non-functional.  The v0.7.0 PIO rewrite moved the monitor's state machines into the ROM-serving PIO blocks, but the capture DMA, the CS→address-read IRQ handshake and the state-machine enable were all left targeting the old, now-unused block, so no address capture ever reached the ring buffer and no knock was ever detected.  All three now follow the runtime serving-block assignment.
+  - This required a firmware update.
+- Extend the address monitor to every ROM type the firmware serves: 32-pin ROMs, whose address pins sit in a different GPIO bank from CS and data; 40-pin 16-bit ROMs in both `/BYTE` modes (#277); and the 23QL384's qualifier-based chip-select (`ALG_CS_2`, #278), the one ROM type that folds address lines into its select decision.  For the 23QL384 a host must keep its command signalling inside a range the ROM actually serves — below the top quarter of its address space.  The host-control README's list of unsupported types is now empty.
+  - This required a firmware update.  No plugin update is needed: an existing host-control binary picks the support up from the firmware.
+- Add an observed (bus) address space to the plugin API and route RBCP command decode through it.  On a 40-pin part the device does not observe the ROM's least-significant address line, so command signalling occupies a narrower address space than the byte-addressed image; decoding in byte space corrupted the command on a 16-bit ROM.  Two additive getters expose this — `ORA_ID_DEMANGLE_OBSERVED_ADDR` and `ORA_ID_GET_UNOBSERVED_ADDR_BITS` — and the RBCP spec (now v0.1.1) gains a matching "Address Line Presentation" clarification.
+  - This required a firmware update and a host-control plugin update.
+- Report as many RAM slots as the RAM holds, rather than at most seven, and let the host-control plugin keep those a host cannot name for its own use.  A slot is exactly one ROM region, so a small ROM now yields many small slots where the old cap of seven was meant to guarantee 64KB ones and could not — a slot has to be the size of the ROM being served.  The plugin advertises at most 170 of them, since every RBCP command that names a slot rejects 0xAA, and stages NV write transactions in the ones above that.  This makes NV storage genuinely writable on devices serving a ROM smaller than the 4KB staging buffer, where `GET_NV_CAPABILITY` previously claimed writable but every transaction failed.
+  - **Potentially breaking.**  A host that assumed a RAM slot was large enough for a purpose of its own, or that there were at most seven, sees something different.
+  - This required a firmware update and a host-control plugin update.
+- Fix two further RBCP conformance defects in the host-control plugin.  Group 0x01 Read commands received in command mode were executed, writing their answer into a back-channel region the device had stopped maintaining and so modifying the served ROM image outside any session; Group 0x01 and Group 0x03 now consume the command's argument bytes and discard it.  And `ENTER_CMD_RESP` asking for a back-channel larger than the RAM slot was discarded silently where the specification requires a reported failure, which a host distinguishes by whether the token increments.
+  - This required a host-control plugin update.
+- Fix the host-control plugin writing to the RBCP response header for the three commands the specification requires to update nothing: `RBCP_RESET`, `EXIT_CMD_RESP_SILENT` and `SWITCH_AND_EXIT`.  All three ran the first half of the command processing sequence before being recognised as silent, so a host that polled the back-channel after one of them saw the token change and then waited for a completion that never came.
+  - This required a host-control plugin update.
+- Add the plugin metadata getter `ORA_ID_GET_METADATA_UINT`, and expose device GPIOs (status LED, RGB LED, VBUS, SWD, ext-flash CS), the live status-LED state and the RP235x variant to plugins over the existing metadata-key mechanism.  `ora_set_status_led` now drives the LED even when it was configured off, and records the state as the coordination channel plugins read; CPU fault handlers force it on so faults stay visible.  The RGB plugin now discovers its GPIOs at runtime instead of hard-coding them, and reflects the status-LED state on boards where the two share a GPIO.
+  - This required a firmware update and an RGB plugin update.
+- Implement the previously-reserved `ORA_ID_GET_FLASH_SLOT_EXT_INFO` as a per-ROM getter, returning the ROM type string exactly as the user entered it (e.g. `27LC512`, not the canonical `27512`) plus the filename, chip size and RBCP type.  Previously the ROM type was only reachable as its numeric RBCP code.  Additive; the `api.h` version is unchanged.
+  - This required a firmware update.
+- The ROM type stored in a firmware's metadata now preserves the exact string the user entered rather than a canonicalised name, on both the config-file `"type"` and CLI `--slot type=...` paths.  The resolved chip type continues to drive all behaviour; only the human-readable metadata string changed.
+- Give the 23C1010 mask ROM its own RBCP chip type (`0x24`); it previously shared `0x0F` with the electrically-equivalent 27C010, which the v0.7.0+ generator no longer requires.  Changes the metadata emitted for 23C1010 images.  The RBCP spec is updated to match, and also gains the 23C1001, 27C200, HM7641 and 62256 types.
+- Add the `62256` chip type — 32KB static RAM in a 28-pin DIP — as a recognised type, but **not yet supported for serving**: it shows as ✗ in `docs/CHIP-TYPES.md` and `onerom-gen` rejects any config using it.  This reserves its name, pinout and RBCP chip type ahead of SRAM serving support returning to the v0.7.x firmware.
+- Recognise `9316A` as an alias of the `2316` mask ROM, alongside the existing `9316`, so an Apple II/II+ ROM stamped `9316A` resolves without editing the config.
+- Fix the `sel_jumper_pull` bitfield in the fire-28-c, fire-28-d and fire-32-b hardware configs, which broke image select jumpers B and D.  The high bit sat on a grounded pin instead of the SWDIO image-select pin, which is jumpered to the RUN line and so pulled high, and the jumper was therefore read inverted on those boards.  This changes the generated firmware for those three boards.
+- Fix `swd_enabled = false` having no effect on v0.7.0, where it was stored and reported but never acted on.  SWD now stays up for the whole of boot and is shut off just before serving, keeping debug port SRAM accesses off the serving DMAs.  Boot logging may now be combined with it, and stops when SWD does.  Not a debug lockout — BOOTSEL/PICOBOOT are unaffected.
+  - This required a firmware update.
+- Fix restoring an image select pin shared with SWD resetting the control register of the wrong GPIO, on boards where a select jumper sits on SWCLK or SWDIO.
+  - This required a firmware update.
+- Fix `onerom firmware build` accepting `--swd_disabled` where `program` accepted `--swd_disable`, so each underscore spelling worked on only one subcommand.  `--disable-swd` and `--swd-disable` work on both.
+- Fix `size_handling: pad` filling the tail of an **Intel HEX** image with `0xAA` instead of the documented `0xFF`, putting two different fill values in one image.  Raw binary images are unaffected.
+- Fix `onerom-gen`'s v2 (v0.7.0+) builder not checking that the composed ROM data fits the target board's flash.  The CLI caught an oversized config downstream in `onerom-fw`, but Studio and the web programmer do not call that path, so the check now lives in the builder itself where every consumer gets it.
+- Fix `onerom image swap-bytes` panicking at startup, even on `--help`, from a clap short-option collision: `-i` was claimed by both the global `--vid-pid` and swap-bytes' `--input`.  `--input`/`--output` are now long-only (aliases `--in`/`--out` unchanged).
+- Fix building a chip type only v0.7.0+ firmware serves — a `23C1001` or `HM7641` — against an older firmware reporting "This tool does not support chip type", when the tool supports it perfectly well and only the firmware is too old.  It now names the firmware version required, as every other version-gated feature does.
+- Fix `onerom-lab` applying the 8-bit read timing to the 27C200.  The longer read delay and tristate settle belong to every 16-bit-capable part, but the test was keyed on the 27C400 specifically.  Affects hardware testing only.
+- One ROM Lens works again, and has been ported from the old C-to-WebAssembly shim to a Rust crate (`onerom-lens`, in `rust/lens`) built on `onerom-fw-emulator` — it was untested and broken in v0.7.0.  It runs the real firmware PIO/DMA serving code, visualising address/data/control-line waveforms live in the browser, and handles 8-bit ROMs and the 27C400 in both byte and 16-bit word modes.  Build and serve it with `rust/lens/serve.sh [CONFIG] [BOARD]`; the WebAssembly build is now covered by CI.  The old `firmware/lens/` C shim and `firmware/lens.mk` are removed.  The shipped firmware is unchanged.
+- Improve One ROM Lens waveform readability: distinct green HIGH and cyan LOW levels where both were previously drawn the same, neutral-grey High-Z and transition edges, held address and data values annotated with their duration in cycles and in nanoseconds derived from the firmware's real SYSCLK, cycle graduation ticks once zoomed in far enough, and a compact per-bit cursor readout with a stacked summary that follows the pointer.
+- Fix the One ROM Lens signal-label hover tooltip showing `GPIO [object Object]` instead of the GPIO number.
+- `onerom-gen`'s public config model — `Config`, `ChipConfig`, `ChipSetConfig`, `Location`, `License`, `FileSpec`, `FileData` — and its `Error` enum are now `#[non_exhaustive]`, so future field and variant additions are backwards-compatible for downstream crates.  This is itself a breaking change (external code must use the new `new()` constructors rather than struct literals, and a `match` on `Error` must carry a wildcard arm), hence the `onerom-gen` minor version bump.
+- `onerom_config::chip::ChipType` is now `#[non_exhaustive]`, so future chip-type additions are backwards-compatible.  This is likewise a breaking change for external `match` expressions, hence the `onerom-config` minor version bump.
+- `onerom-gen` is now built as a genuine `no_std` (+`alloc`) crate, matching its intended use in embedded and WASM contexts; the `#![no_std]` attribute was previously commented out.  Backwards-compatible for `std` consumers.
+- Fix `docs/COMPATIBILITY.md` and `onerom chips` reporting compatibility for a chip-select configuration users cannot ask for.  Both checked each chip with only its primary select monitored, which needs the `allow_cs_ignore` config option and is rejected outright by `--slot`; they now check the configuration the tools actually produce, with every control line monitored.  HM7641 gains fire-24-a/b, the 28-pin and fire-32-a boards, which One ROM has always served; 2316, 9316, 9316A, 2332, 4732 and 9332 are no longer listed for fire-28-b/c/d, nor 23128 for fire-32-a/b, which One ROM has never been able to serve.
+- **Breaking:** `onerom-gen`'s `check_chip_on_board` becomes `check_chip_set_on_board`, taking a chip-set type, chip count and CS configuration, so banked and multi sets can be checked as well as single chips; `supported_chips` takes the set shape too.  `CompatResult` gains the GPIOs whose ROM table bits address nothing, and it and `ChipCompat` are now `#[non_exhaustive]`.
+- Removed `test-retired`, the old test mechanism, superseded by `onerom-fw-tester`.
+- `onerom-protocol` is deprecated and `onerom-database` is unmaintained, and both now say so on crates.io.  `onerom-protocol` served the original STM32F4 One ROM Lab, which the current Fire-based Lab replaced; it also carries a `#![deprecated]` attribute, so a downstream consumer is warned at compile time rather than only in the README.  Neither is used by anything in the tree.
+- GitHub releases no longer attach a base firmware binary.  The firmware Web and CLI build from is published to [images.onerom.org](https://images.onerom.org) and downloaded automatically; the attached copy was separately built and could differ from it.
+
+To publish:
+- Rust crates (in dependency order):
+  - onerom-database 0.1.2
+  - onerom-config 0.6.0
+  - onerom-protocol 0.1.1
+  - onerom-metadata 0.1.4
+  - onerom-gen 0.7.0
+  - onerom-fw-parser 0.8.0
+  - onerom-fw 0.2.0
+  - onerom-app 0.2.0
+  - onerom-cli 0.3.0
+- Config schema
+- CLI bin 0.3.0
+- Studio 0.2.1
+- USB plugin 0.2.1
+- RGB plugin 0.1.2
+- host-control plugin 0.1.2
+- RBCP spec 0.1.1
+- WASM 0.5.0
+- Site
+- Release 0.7.1
+
+## v0.7.0 - 2026-07-20
+
+This release includes a significant rewrite of the One ROM firmware focusing on Fire boards.
+
+The primary benefit of this firmware in the immediate term is more efficient use of flash for specific ROM types - in many cases, with the later board types, the amount of flash used to store a ROM image is the same as the ROM image size itself, unlike previous releases.
+
+There is also a longer term benefit of reduced maintainability costs and also lower costs to add new ROM types in the future - meaning a better user experience.
+
+Ice boards are capped at firmware v0.6.xx (and are not supported in v0.7.0+).  The programming tools continue to support Ice boards and v0.6.xx.
+
+TODO
+- Figure out why status LED is off on v0.7.0
+
+TO TEST
+- All ROM types live
+- Host control plugin
+
+Retired:
+- `lab` (and replaced by `onerom-lab`)
+- `sdrr-check` (superceded by `onerom-fw-tester`)
+- `sdrr-info` (superceded by the CLI `onerom firmware inspect` command)
+- `sdrr-tester` (superceded by `onerom-lab`)
+- `test` (superceded by `onerom-fw-tester`)
+- Silent replacement of SST39SF040 with 27C040 for fire-32-a.  Decided it was best to flag this isn't natively supported.
+
+New:
+- `onerom-app` crate, containing functionality shared between One ROM user facing apps, like CLI, Studio and the Web UI (via onerom-wasm).
+
+Updated:
+- All Rust crates and programming tools
+- plugins/system/usb
+- plugins/user/host-control
+- CI to perform comprehensive testing of the firmware, for all ROM types, and dynamically banked and multi-ROM sets, and PIO focused plugin API functions
+
+Limitations:
+- SRAM support (6116) is not currently supported by the v0.7.xx firmware train.  This limitation is expected to be lifted in future.
+- One ROM Lens has not been tested with this release, and is likely broken.
+
+## 2026-07-04
+
+Release hardware design files for new variants:
+- fire-24-f
+- fire-28-c
+- fire-32-b2
+- fire-40-b
+
+All of these new hardware designs are licensed under the [CERN Open Hardware Licence Version 2 - Weakly Reciprocal (CERN-OHL-W-2.0)](/LICENSE.md#cern-ohl-w-20-license).
+
+All previous hardware designs are re-licensed under the [CERN Open Hardware Licence Version 2 - Weakly Reciprocal (CERN-OHL-W-2.0)](/LICENSE.md#cern-ohl-w-20-license).
+
+## v0.6.14 - 2026-07-02
+
+- Added support for fire-40-b and fire-24-f.
 - Improved lab-new scripts.
 
 ## v0.6.13 - 2026-06-02
@@ -14,6 +176,7 @@ Added:
 - HN62402 (128KBx16/256x8) support for fire-40-a.  Uses 512KB on flash.
 - Support for prototypes fire-28-c and fire-32-b.
 - SST39SF040 support (fire-32-b only).  Uses 512KB on flash.
+- Firmware decoding support from
 
 Fixed:
 - 23C1010 support - there were failures when creating firmware with 23C1010.

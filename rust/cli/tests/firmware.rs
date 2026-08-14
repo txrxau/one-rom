@@ -2,12 +2,14 @@
 //
 // MIT License
 
+use onerom_config::chip::ChipType;
 use onerom_config::hw::BOARDS;
 
 mod common;
 use common::{
-    build_config_test, build_slots, fails, onerom, project_root, representative_board, slot,
-    slot_fails, slot_succeeds, succeeds,
+    FIXED_VERSION, FirmwareVersion, V1_VERSION, V2_VERSION, build_config_test,
+    build_slots_at_version, fails, onerom, project_root, representative_board, slot, slot_fails,
+    slot_succeeds, succeeds,
 };
 
 #[test]
@@ -204,41 +206,311 @@ fn firmware_chips_all_boards_succeed() {
     }
 }
 
+// --- 24-pin random configs: fixed + current ---
+
 #[test]
-fn firmware_build_24pin_config() {
-    build_config_test("onerom-config/test/24-random-27xx.json", 24);
+fn firmware_build_24pin_config_23xx() {
+    build_config_test(
+        "onerom-config/test/24-random-23xx.json",
+        24,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
 }
 
 #[test]
-fn firmware_build_28pin_config() {
-    build_config_test("onerom-config/test/28-random-27xxx.json", 28);
+fn firmware_build_24pin_config_23xx_current() {
+    build_config_test(
+        "onerom-config/test/24-random-23xx.json",
+        24,
+        FirmwareVersion::Current,
+    );
 }
+
+#[test]
+fn firmware_build_24pin_config_27xx() {
+    build_config_test(
+        "onerom-config/test/24-random-27xx.json",
+        24,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_24pin_config_27xx_current() {
+    build_config_test(
+        "onerom-config/test/24-random-27xx.json",
+        24,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_24pin_config_28xx() {
+    build_config_test(
+        "onerom-config/test/24-random-28xx.json",
+        24,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_24pin_config_28xx_current() {
+    build_config_test(
+        "onerom-config/test/24-random-28xx.json",
+        24,
+        FirmwareVersion::Current,
+    );
+}
+
+// --- 28-pin random configs: fixed + current ---
+
+#[test]
+fn firmware_build_28pin_config_23xxx() {
+    build_config_test(
+        "onerom-config/test/28-random-23xxx.json",
+        28,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_23xxx_current() {
+    build_config_test(
+        "onerom-config/test/28-random-23xxx.json",
+        28,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_23qlxxx() {
+    build_config_test(
+        "onerom-config/test/28-random-23qlxxx.json",
+        28,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_23qlxxx_current() {
+    build_config_test(
+        "onerom-config/test/28-random-23qlxxx.json",
+        28,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_27xxx() {
+    build_config_test(
+        "onerom-config/test/28-random-27xxx.json",
+        28,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_27xxx_current() {
+    build_config_test(
+        "onerom-config/test/28-random-27xxx.json",
+        28,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_28xxx() {
+    build_config_test(
+        "onerom-config/test/28-random-28xxx.json",
+        28,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_28xxx_current() {
+    build_config_test(
+        "onerom-config/test/28-random-28xxx.json",
+        28,
+        FirmwareVersion::Current,
+    );
+}
+
+// --- 32-pin random configs: fixed + current ---
 
 #[test]
 fn firmware_build_32pin_config_27c0x0() {
-    build_config_test("onerom-config/test/32-random-27c0x0.json", 32);
+    build_config_test(
+        "onerom-config/test/32-random-27c0x0.json",
+        32,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_32pin_config_27c0x0_current() {
+    build_config_test(
+        "onerom-config/test/32-random-27c0x0.json",
+        32,
+        FirmwareVersion::Current,
+    );
 }
 
 #[test]
 fn firmware_build_32pin_config_27c301() {
-    build_config_test("onerom-config/test/32-random-27c301.json", 32);
+    build_config_test(
+        "onerom-config/test/32-random-27c301.json",
+        32,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
 }
 
 #[test]
-fn firmware_build_40pin_config_27c400() {
-    build_config_test("onerom-config/test/40-random-27c400.json", 40);
+fn firmware_build_32pin_config_27c301_current() {
+    build_config_test(
+        "onerom-config/test/32-random-27c301.json",
+        32,
+        FirmwareVersion::Current,
+    );
+}
+
+// --- 40-pin random configs: fixed + current ---
+
+#[test]
+fn firmware_build_40pin_config() {
+    build_config_test(
+        "onerom-config/test/40-random.json",
+        40,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_40pin_config_current() {
+    build_config_test(
+        "onerom-config/test/40-random.json",
+        40,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_40pin_config_force_16bit() {
+    build_config_test(
+        "onerom-config/test/40-random-force-16bit.json",
+        40,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_40pin_config_force_16bit_current() {
+    build_config_test(
+        "onerom-config/test/40-random-force-16bit.json",
+        40,
+        FirmwareVersion::Current,
+    );
+}
+
+// --- 24-pin bank configs: fixed + current ---
+
+#[test]
+fn firmware_build_24pin_config_bank_23xx() {
+    build_config_test(
+        "onerom-config/test/24-bank-23xx.json",
+        24,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_24pin_config_bank_23xx_current() {
+    build_config_test(
+        "onerom-config/test/24-bank-23xx.json",
+        24,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_24pin_config_bank_27xx() {
+    build_config_test(
+        "onerom-config/test/24-bank-27xx.json",
+        24,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_24pin_config_bank_27xx_current() {
+    build_config_test(
+        "onerom-config/test/24-bank-27xx.json",
+        24,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_24pin_config_bank_28xx() {
+    build_config_test(
+        "onerom-config/test/24-bank-28xx.json",
+        24,
+        FirmwareVersion::Fixed(FIXED_VERSION),
+    );
+}
+
+#[test]
+fn firmware_build_24pin_config_bank_28xx_current() {
+    build_config_test(
+        "onerom-config/test/24-bank-28xx.json",
+        24,
+        FirmwareVersion::Current,
+    );
+}
+
+// --- 28-pin bank configs: current only ---
+
+#[test]
+fn firmware_build_28pin_config_bank_23xxx_current() {
+    build_config_test(
+        "onerom-config/test/28-bank-23xxx.json",
+        28,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_bank_23qlxxx_current() {
+    build_config_test(
+        "onerom-config/test/28-bank-23qlxxx.json",
+        28,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_bank_27xxx_current() {
+    build_config_test(
+        "onerom-config/test/28-bank-27xxx.json",
+        28,
+        FirmwareVersion::Current,
+    );
+}
+
+#[test]
+fn firmware_build_28pin_config_bank_28xxx_current() {
+    build_config_test(
+        "onerom-config/test/28-bank-28xxx.json",
+        28,
+        FirmwareVersion::Current,
+    );
 }
 
 #[test]
 fn firmware_build_slot_2364_single() {
     slot_succeeds(
         representative_board(24),
-        &[slot(
-            "rand_8KB.rom",
-            "2364",
-            &[("cs1", "active_low")],
-            None,
-        )],
+        &[slot("rand_8KB.rom", "2364", &[("cs1", "active_low")], None)],
     );
 }
 
@@ -442,7 +714,7 @@ fn firmware_build_slot_28pin_dual() {
     slot_succeeds(
         representative_board(28),
         &[
-        slot("rand_64KB.rom", "27512", &[], None),
+            slot("rand_64KB.rom", "27512", &[], None),
             slot("rand_64KB.rom", "27512", &[], None),
         ],
     );
@@ -478,21 +750,77 @@ fn firmware_build_slot_40pin_dual() {
     );
 }
 
+/// SRAM builds against V1 firmware, with and without an image, and must keep
+/// doing so: `6116` is in the V1 per-board chip type set, so anyone building
+/// for 0.6.x can use it.
 #[test]
-fn firmware_build_slot_sram() {
-    slot_succeeds(
+fn firmware_build_slot_sram_v1() {
+    for spec in [slot("0_63_2048.rom", "6116", &[], None), "type=6116".into()] {
+        let out = build_slots_at_version(representative_board(24), &[spec], Some(V1_VERSION));
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// Against V2 firmware, whether SRAM builds is whatever the V2 builder says:
+/// no V2 firmware serves `6116` at the time of writing, so it is refused.
+///
+/// The expectation is read from `SUPPORTED_CHIP_TYPES_V2` rather than written
+/// down, so this test follows the builder: it starts requiring success the day
+/// `Chip6116` joins that list, and fails if the firmware gains SRAM without it.
+#[test]
+fn firmware_build_slot_sram_tracks_the_v2_chip_list() {
+    let servable = onerom_gen::SUPPORTED_CHIP_TYPES_V2.contains(&ChipType::Chip6116);
+    let out = build_slots_at_version(
         representative_board(24),
         &[slot("0_63_2048.rom", "6116", &[], None)],
+        Some(V2_VERSION),
+    );
+    assert_eq!(
+        out.status.success(),
+        servable,
+        "SRAM build vs SUPPORTED_CHIP_TYPES_V2\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
+/// A chip type only V2 serves must name the firmware version it needs when
+/// built against V1, rather than reporting that the tool does not know it.
+///
+/// `23C1001` is the case in hand: V1 firmware has never served one, so a plain
+/// `firmware build` - which targets the latest release, still a 0.6.x - reached
+/// the tool-support error and sent the user looking for a missing chip type
+/// instead of a newer firmware.  The minimum is read from the chip type, so the
+/// test follows `chip-types.json` rather than restating it.
 #[test]
-fn firmware_build_slot_sram_no_image() {
-    let slot = "type=6116";
-    let output = build_slots(representative_board(24), &[slot.to_string()]);
-    println!("Output: {}", String::from_utf8_lossy(&output.stdout));
+fn firmware_build_slot_v2_only_chip_on_v1_names_the_minimum_version() {
+    let minimum = ChipType::Chip23C1001
+        .min_supported_firmware_version()
+        .expect("23C1001 declares a minimum firmware version");
+    let spec = slot(
+        "rand_128KB.rom",
+        "23C1001",
+        &[("cs1", "active-low"), ("cs2", "ignore")],
+        None,
+    );
+
+    let out = build_slots_at_version("fire-32-b", std::slice::from_ref(&spec), Some(V1_VERSION));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "V1 built a 23C1001: {stderr}");
     assert!(
-        output.status.success(),
-        "SRAM slot without image should succeed"
+        stderr.contains(&minimum.to_string()),
+        "V1 failure does not name the {minimum} minimum: {stderr}"
+    );
+
+    // The same slot against the firmware that does serve it, so the V1 failure
+    // is known to be about the firmware version and nothing else.
+    let out = build_slots_at_version("fire-32-b", &[spec], Some(V2_VERSION));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }

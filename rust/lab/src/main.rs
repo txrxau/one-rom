@@ -1,12 +1,9 @@
-//! One ROM Lab firmware
-
-// Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
+// Copyright (c) 2026 Piers Finlayson <piers@piers.rocks>
 //
 // MIT licence
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
 
 extern crate alloc;
@@ -16,191 +13,143 @@ use log::{debug, error, info, trace, warn};
 
 use embassy_executor::Spawner;
 use embassy_executor::main as embassy_main;
-use embassy_stm32::gpio::Flex;
-use embassy_stm32::rcc::clocks;
-
-#[cfg(feature = "repeat")]
+use embassy_rp::{clocks::ClockConfig, config::Config};
 use embassy_time::Timer;
 
 use embedded_alloc::LlffHeap as Heap;
-#[cfg(feature = "usb")]
-use panic_probe as _;
-#[cfg(not(feature = "usb"))]
 use panic_rtt_target as _;
 
-#[cfg(feature = "control")]
-mod control;
+use once_cell::sync::OnceCell;
+use static_cell::StaticCell;
+
+use onerom_config::hw::Board;
+
+mod cli;
 mod error;
-mod info;
+mod hw;
 mod logs;
-mod rcc;
+mod output;
 mod rom;
-mod types;
-#[cfg(feature = "usb")]
 mod usb;
 
-pub use error::Error;
-pub use rom::{Id as RomId, Rom};
+use rom::CsPolarities;
 
-use info::{LAB_RAM_INFO, PKG_VERSION};
+pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+static SERIAL_BUF: StaticCell<[u8; 16]> = StaticCell::new();
+pub static SERIAL_ID: OnceCell<&'static str> = OnceCell::new();
+
+// ---------------------------------------------------------------------------
+// Build-time configuration via environment variables
+// ---------------------------------------------------------------------------
+
+const BOARD_STR: Option<&str> = option_env!("BOARD");
+
+const CS1_STR: Option<&str> = option_env!("CS1");
+const CS2_STR: Option<&str> = option_env!("CS2");
+const CS3_STR: Option<&str> = option_env!("CS3");
+
+// ---------------------------------------------------------------------------
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-#[cortex_m_rt::pre_init]
-unsafe fn pre_init() {
-    #[cfg(feature = "usb")]
-    usb::check_bootloader_flag();
-    info::copy_lab_ram_info();
-}
-
 #[embassy_main]
-async fn main(_spawner: Spawner) {
-    // Initialize the heap allocator
+async fn main(spawner: Spawner) -> ! {
+    // Heap
     {
         use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 1024;
+        const HEAP_SIZE: usize = 4096;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         unsafe { HEAP.init(&raw mut HEAP_MEM as usize, HEAP_SIZE) }
     }
 
-    // Set up clock config
-    let mut config = embassy_stm32::Config::default();
-    #[cfg(feature = "usb")]
-    rcc::configure_hse_usb(&mut config);
-    #[cfg(not(feature = "usb"))]
-    rcc::configure_hsi(&mut config);
-
-    // Get peripherals
-    let p = embassy_stm32::init(config);
-
-    // Configure clocks
-    let clocks = clocks(&p.RCC);
-
-    // Init USB/logging
-    #[cfg(feature = "usb")]
-    {
-        let usb_device = usb::Usb::new(p.USB_OTG_FS, p.PA12, p.PA11);
-        usb::run(_spawner, usb_device);
-        usb::init_logger();
-    }
-    #[cfg(not(feature = "usb"))]
     logs::init_rtt();
 
     info!("-----");
     info!("One ROM Lab v{}", PKG_VERSION);
-    info!("Copyright (c) 2025 Piers Finlayson");
-
-    // Log clocks
+    info!("Copyright (c) 2026 Piers Finlayson");
     info!("-----");
-    match clocks.sys.to_hertz() {
-        Some(hz) => debug!("SYSCLK: {hz}"),
-        None => warn!("SYSCLK: Unknown"),
-    }
+    debug!("RP2350 target");
 
-    debug!(
-        "One ROM Lab Flash Info address: {:#010X}",
-        &info::LAB_FLASH_INFO as *const _ as usize
-    );
-    #[allow(static_mut_refs)]
-    unsafe {
-        debug!(
-            "One ROM Lab RAM Info address:   {:#010X}",
-            &LAB_RAM_INFO as *const _ as usize
-        );
-    }
+    // Clocks
+    let mut config = Config::default();
+    config.clocks = ClockConfig::system_freq(150_000_000).expect("Failed to configure clocks");
+    let p = embassy_rp::init(config);
+    debug!("Clocks configured to 150MHz");
 
-    // Collate the address and data pins
-    let addr_pins = [
-        Flex::new(p.PC5),
-        Flex::new(p.PC4),
-        Flex::new(p.PC6),
-        Flex::new(p.PC7),
-        Flex::new(p.PC3),
-        Flex::new(p.PC2),
-        Flex::new(p.PC1),
-        Flex::new(p.PC0),
-        Flex::new(p.PC8),
-        Flex::new(p.PC13),
-        Flex::new(p.PC11),
-        Flex::new(p.PC12),
-        Flex::new(p.PC9),
-        Flex::new(p.PC10), // 2364 CS pin, set as "A13"
-    ];
-    let data_pins = [
-        Flex::new(p.PA7),
-        Flex::new(p.PA6),
-        Flex::new(p.PA5),
-        Flex::new(p.PA4),
-        Flex::new(p.PA3),
-        Flex::new(p.PA2),
-        Flex::new(p.PA1),
-        Flex::new(p.PA0),
-    ];
+    init_serial_id();
+    debug!("Serial ID: {}", serial_id());
 
-    // Create the ROM object
-    let mut rom = Rom::new(addr_pins, data_pins);
-    unsafe {
-        LAB_RAM_INFO.rom_data = rom.buf.as_ptr() as *const core::ffi::c_void;
-    }
-    rom.init();
+    let usb_device = usb::Usb::new(p.USB);
+    usb::run(spawner, usb_device);
 
-    #[cfg(feature = "control")]
-    {
-        let mut control = control::Control::new(rom);
-        control.run().await;
-    }
+    // Build the physical-pin → MCU GPIO map for this board
+    let board = BOARD_STR.and_then(Board::try_from_str);
+    if let Some(board) = board {
+        debug!("Board: {}", board.name());
 
-    #[cfg(feature = "qa")]
-    {
-        info!("QA mode");
-        #[cfg(feature = "usb")]
-        info!("Press `d` to enter DFU mode");
-        loop {
-            #[cfg(not(feature = "usb"))]
-            match rom.read_rom().await {
-                Some(_) => info!("ROM read successfully"),
-                None => info!("Failed to read ROM"),
-            }
-            #[cfg(feature = "usb")]
-            match embassy_time::with_timeout(embassy_time::Duration::from_secs(5), usb::recv_key())
-                .await
-            {
-                Ok(key) => {
-                    if key == b'd' {
-                        info!("Entering DFU mode...");
-                        usb::enter_dfu_mode().await;
-                    }
-                }
-                Err(_) => (),
-            }
-            #[cfg(not(feature = "usb"))]
-            embassy_time::Timer::after_secs(1).await;
-            info!("Reading ROM...");
-        }
-    }
-
-    #[cfg(not(any(feature = "control", feature = "qa")))]
-    {
-        loop {
-            match rom.read_rom().await {
-                Some(_) => break,
-                None => info!("Failed to read ROM"),
-            }
-
-            #[cfg(feature = "oneshot")]
-            {
-                info!("Done");
-                return;
-            }
-            #[cfg(feature = "repeat")]
-            {
-                info!("Waiting 5 seconds before reading again");
-                Timer::after_secs(5).await;
+        // Status LED (optional — some boards have none)
+        let led_gpio = match board.pin_status() {
+            255 => None,
+            gpio => Some(gpio),
+        };
+        let mut led = led_gpio.map(hw::steal_gpio);
+        if let Some(ref mut led) = led {
+            led.set_as_output();
+            for _ in 0..2 {
+                led.set_high();
+                Timer::after_millis(200).await;
+                led.set_low();
+                Timer::after_millis(200).await;
             }
         }
+    } else {
+        debug!("Board: (not set)");
+    }
+
+    debug!("-----");
+
+    let mut state = cli::SessionState::new(board);
+    cli::run(&mut state).await
+}
+
+/// Parse a CS active-level string from an environment variable.
+/// Accepts "high"/"1" (active-high) and "low"/"0" (active-low).
+fn parse_active_level(s: &str, var_name: &str) -> bool {
+    if s.eq_ignore_ascii_case("high") || s == "1" {
+        true
+    } else if s.eq_ignore_ascii_case("low") || s == "0" {
+        false
+    } else {
+        panic!(
+            "{} must be 'high', '1', 'low', or '0', got '{}'",
+            var_name, s
+        )
     }
 }
 
-#[cfg(all(feature = "control", feature = "oneshot"))]
-compile_error!("Features 'control' and 'oneshot' are mutually exclusive");
+pub fn cs_polarities() -> CsPolarities {
+    CsPolarities {
+        cs1: CS1_STR.map(|s| parse_active_level(s, "CS1")),
+        cs2: CS2_STR.map(|s| parse_active_level(s, "CS2")),
+        cs3: CS3_STR.map(|s| parse_active_level(s, "CS3")),
+    }
+}
+
+fn init_serial_id() {
+    use embassy_rp::otp;
+    let id = otp::get_chipid().unwrap_or(0);
+    let buf = SERIAL_BUF.init([0u8; 16]);
+    const HEX: &[u8] = b"0123456789ABCDEF";
+    for i in 0..8usize {
+        let byte = (id >> (56 - i * 8)) as u8;
+        buf[i * 2] = HEX[(byte >> 4) as usize];
+        buf[i * 2 + 1] = HEX[(byte & 0xF) as usize];
+    }
+    SERIAL_ID.set(core::str::from_utf8(buf).unwrap()).ok();
+}
+
+pub fn serial_id() -> &'static str {
+    SERIAL_ID.get().copied().expect("serial ID not initialised")
+}

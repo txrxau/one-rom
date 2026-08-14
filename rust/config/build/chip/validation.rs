@@ -11,13 +11,33 @@ const VALID_DATA_LINE_COUNTS: &[usize] = &[8, 16];
 const MIN_PIN_NUMBER: u8 = 1;
 const VALID_PIN_COUNTS: &[u8] = &[24, 28, 32, 40];
 const VALID_READ_STATES: &[&str] = &["vcc", "high", "low", "chip_select", "x", "word_size"];
-const VALID_CONTROL_LINES: &[&str] = &["cs1", "cs2", "cs3", "ce", "oe", "byte", "write", "busy"];
+const VALID_CONTROL_LINES: &[&str] = &[
+    "cs1", "cs2", "cs3", "cs4", "ce", "oe", "byte", "write", "busy",
+];
+
+/// Chip select lines.
+///
+/// A CS line's polarity may be mask-programmed at manufacture
+/// (`configurable`, e.g. the 23xx series), in which case it is supplied by
+/// the user's ChipConfig; or fixed by the silicon (`fixed_active_low` /
+/// `fixed_active_high`, e.g. the HM7641), in which case the user has no say
+/// in it.  A chip type may mix the two across its CS lines.
+const CS_CONTROL_LINES: &[&str] = &["cs1", "cs2", "cs3", "cs4"];
+
+/// Control lines which are always active low.
+///
+/// Unlike the CS lines, the `ce`/`oe` names denote the JEDEC-standard enables
+/// of the 27xx/28xx families and so carry their polarity: `fixed_active_low`
+/// is the only valid type for them.  A part whose enables are active high, or
+/// whose enables differ in polarity, uses CS lines instead.
+const FIXED_ACTIVE_LOW_CONTROL_LINES: &[&str] = &["ce", "oe"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlLineType {
     Configurable,
     FixedActiveLow,
+    FixedActiveHigh,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +45,11 @@ pub struct ControlLine {
     pub pin: u8,
     #[serde(rename = "type")]
     pub line_type: ControlLineType,
+    /// Whether this line may be set to Ignore in a ChipConfig without the
+    /// explicit allow_cs_ignore flag.  Set only for lines where the chip
+    /// datasheet explicitly defines a don't-care state (e.g. 23C1001 cs1/cs2).
+    #[serde(default)]
+    pub allow_ignore: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +99,12 @@ pub struct ChipType {
     pub supported: Option<String>,
     pub aliases: Option<Vec<String>>,
     pub function: ChipFunction,
+
+    /// RBCP wire protocol chip type value.  Must match the corresponding
+    /// `onerom_rom_type_t` enum variant in the firmware metadata schema, and
+    /// must be unique across all chip types (enforced by `validate`).
+    pub rbcp_chip_type: u8,
+
     pub bit_modes: Vec<u8>,
     pub pins: u8,
 
@@ -87,6 +118,14 @@ pub struct ChipType {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power: Option<Vec<PowerPin>>,
+    pub deselect_when_address_all_high: Option<Vec<u8>>,
+
+    /// Permit this chip type to have both configurable CS lines (cs1/cs2/cs3)
+    /// and fixed CE/OE lines simultaneously in its control map.  Most chip
+    /// types are either CS-style or CE/OE-style; only chips like 23C1001 are
+    /// both.  Replaces the old per-chip-name special case in validation.
+    #[serde(default)]
+    pub allow_mixed_control: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +175,20 @@ pub enum ValidationError {
     UnknownControlLine {
         chip_type: String,
         line_name: String,
+    },
+    /// A control line was declared with a polarity type its name does not
+    /// permit - for example a `cs1` line declared `fixed_active_low`, or an
+    /// `oe` line declared `fixed_active_high`.
+    InvalidControlLinePolarity {
+        chip_type: String,
+        line_name: String,
+        expected: &'static [&'static str],
+    },
+    /// Two chip types share the same rbcp_chip_type value.
+    DuplicateRbcpChipType {
+        chip_type_a: String,
+        chip_type_b: String,
+        value: u8,
     },
 }
 
@@ -212,9 +265,13 @@ impl fmt::Display for ValidationError {
                 chip_type,
                 combination,
             } => {
+                let cs = CS_CONTROL_LINES.join("/");
+                let ce_oe = FIXED_ACTIVE_LOW_CONTROL_LINES.join("/");
                 write!(
                     f,
-                    "ROM type '{}': incompatible chip select line combination: {}.\nCS1/2/3 cannot be used with CE/OE.",
+                    "ROM type '{}': incompatible chip select line combination: {}.\n\
+                     CS lines ({cs}) cannot be used with the JEDEC enables ({ce_oe}) \
+                     unless 'allow_mixed_control' is set.",
                     chip_type, combination
                 )
             }
@@ -227,6 +284,29 @@ impl fmt::Display for ValidationError {
                     f,
                     "ROM type '{}': unrecognised control line name '{}'.\nValid names are: {valid_lines}",
                     chip_type, line_name
+                )
+            }
+            ValidationError::InvalidControlLinePolarity {
+                chip_type,
+                line_name,
+                expected,
+            } => {
+                write!(
+                    f,
+                    "ROM type '{}': control line '{}' has an invalid type (valid: {:?})",
+                    chip_type, line_name, expected
+                )
+            }
+            ValidationError::DuplicateRbcpChipType {
+                chip_type_a,
+                chip_type_b,
+                value,
+            } => {
+                write!(
+                    f,
+                    "ROM types '{}' and '{}' share rbcp_chip_type value {} (0x{:02X}); \
+                     every chip type must have a unique rbcp_chip_type",
+                    chip_type_a, chip_type_b, value, value
                 )
             }
         }
@@ -249,6 +329,21 @@ impl ChipTypesConfig {
         for (type_name, chip_type) in &self.chip_types {
             chip_type.validate(type_name)?;
         }
+
+        // Global uniqueness check: no two chips may share an rbcp_chip_type value.
+        // BTreeMap iteration is alphabetical, giving deterministic error messages.
+        let mut seen: BTreeMap<u8, &str> = BTreeMap::new();
+        for (type_name, chip_type) in &self.chip_types {
+            if let Some(existing) = seen.get(&chip_type.rbcp_chip_type) {
+                return Err(ValidationError::DuplicateRbcpChipType {
+                    chip_type_a: existing.to_string(),
+                    chip_type_b: type_name.to_string(),
+                    value: chip_type.rbcp_chip_type,
+                });
+            }
+            seen.insert(chip_type.rbcp_chip_type, type_name);
+        }
+
         Ok(())
     }
 }
@@ -390,39 +485,69 @@ impl ChipType {
             }
         }
 
-        for line_name in self.control.keys() {
+        for (line_name, control) in &self.control {
+            let line_name = line_name.as_str();
+
             // Check for unrecognised chip select line names.
-            if !VALID_CONTROL_LINES.contains(&line_name.as_str()) {
+            if !VALID_CONTROL_LINES.contains(&line_name) {
                 return Err(ValidationError::UnknownControlLine {
                     chip_type: type_name.to_string(),
                     line_name: line_name.to_string(),
                 });
             }
 
-            // And unexpected line types
-            #[allow(clippy::collapsible_if)]
-            if line_name == "ce" || line_name == "oe" {
-                if self.control[line_name].line_type != ControlLineType::FixedActiveLow {
-                    return Err(ValidationError::IncompatibleControlLines {
-                        chip_type: type_name.to_string(),
-                        combination: format!("{} must be of type 'fixed_active_low'", line_name),
-                    });
-                }
-            }
+            // And unexpected line types.  The line's name determines which
+            // polarity types it may declare; see the const definitions above.
+            self.validate_control_line_polarity(type_name, line_name, &control.line_type)?;
         }
 
         // Check for incompatible chip select line combinations.
-        let cs_lines: Vec<&str> = self.control.keys().map(|s| s.as_str()).collect();
-        if (cs_lines.contains(&"cs1") || cs_lines.contains(&"cs2") || cs_lines.contains(&"cs3"))
-            && (cs_lines.contains(&"ce") || cs_lines.contains(&"oe"))
-        {
-            // 23C1001 is the only chip type to mix CE/OE and CS lines.
-            if type_name != "23C1001" {
+        // CS lines (cs1-cs4) and the JEDEC enables (ce/oe) may only coexist if
+        // the chip type explicitly declares allow_mixed_control in
+        // chip_types.json.
+        let control_lines: Vec<&str> = self.control.keys().map(|s| s.as_str()).collect();
+        let has_cs = control_lines
+            .iter()
+            .any(|name| CS_CONTROL_LINES.contains(name));
+        let has_ce_oe = control_lines
+            .iter()
+            .any(|name| FIXED_ACTIVE_LOW_CONTROL_LINES.contains(name));
+        #[allow(clippy::collapsible_if)]
+        if has_cs && has_ce_oe {
+            if !self.allow_mixed_control {
                 return Err(ValidationError::IncompatibleControlLines {
                     chip_type: type_name.to_string(),
-                    combination: format!("{:?}", cs_lines),
+                    combination: format!("{:?}", control_lines),
                 });
             }
+        }
+
+        Ok(())
+    }
+
+    /// Check that a control line's declared polarity type is permitted for its
+    /// name.
+    ///
+    /// - `ce`/`oe` name the JEDEC-standard enables, so must be
+    ///   `fixed_active_low`.
+    /// - `cs1`-`cs4` may be `configurable`, `fixed_active_low` or
+    ///   `fixed_active_high`: a CS line's polarity may be mask-programmed or
+    ///   fixed by the silicon, and the name says nothing either way.
+    /// - All other names (`byte`, `write`, `busy`) are unconstrained.
+    fn validate_control_line_polarity(
+        &self,
+        type_name: &str,
+        line_name: &str,
+        line_type: &ControlLineType,
+    ) -> Result<(), ValidationError> {
+        if FIXED_ACTIVE_LOW_CONTROL_LINES.contains(&line_name)
+            && *line_type != ControlLineType::FixedActiveLow
+        {
+            return Err(ValidationError::InvalidControlLinePolarity {
+                chip_type: type_name.to_string(),
+                line_name: line_name.to_string(),
+                expected: &["fixed_active_low"],
+            });
         }
 
         Ok(())

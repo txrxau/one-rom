@@ -9,7 +9,9 @@
 
 use log::debug;
 use nusb::DeviceInfo;
-use sdrr_fw_parser::Sdrr;
+use onerom_config::hw::Board;
+use onerom_config::mcu::{Rp235xChipId, RpVariant};
+use onerom_fw_parser::ParsedDevice;
 use wildmatch::WildMatch;
 
 use crate::error::Error;
@@ -52,34 +54,50 @@ pub struct Device {
     #[allow(unused)]
     pub device_info: DeviceInfo,
     /// One ROM device information, if present on the device
-    pub onerom: Option<Sdrr>,
+    pub onerom: Option<ParsedDevice>,
     /// Running or stopped.
     pub state: DeviceState,
     /// Whether this device is capable of running One ROM firmware while
     /// plugged into USB
     pub usb_can_run: bool,
+    /// The RP2350 chip ID, if it has been read. This is the device's invariant
+    /// identity, used to track it across reboots where the USB serial changes
+    /// (bootloader mode, or a programmed serial override).
+    pub chip_id: Option<Rp235xChipId>,
+    /// The RP2350 package variant (RP235xA/RP235xB), if it has been read.
+    /// Populated when read from a running device via GET_INFO.
+    pub rp_variant: Option<RpVariant>,
 }
 
 impl std::fmt::Display for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let serial = self.serial.as_deref().unwrap_or("(no serial)");
-        let info_str = if let Some(onerom) = self.onerom.as_ref()
-            && let Some(info) = onerom.flash.as_ref()
-            && let Some(board) = info.board.as_ref()
-        {
-            let model = board.model().to_string();
-            let chip_pins = board.chip_pins();
-            // Hardware revision is last part of model string after last dash, e.g. "fire-24-e" -> "e" and convert to upper case
-            let hw_rev = board
-                .name()
-                .rsplit_once('-')
-                .map(|(_, rev)| rev)
-                .unwrap_or("(unknown revision)")
-                .to_uppercase();
-            let fw_version = &info.version;
-            format!("One ROM {model} {chip_pins} {hw_rev} - Firmware: {fw_version}")
-        } else {
-            "Unknown           - Firmware: n/a  ".to_string()
+        let info_str = match self.onerom.as_ref() {
+            Some(ParsedDevice::Original(sdrr))
+                if sdrr.flash.as_ref().and_then(|f| f.board.as_ref()).is_some() =>
+            {
+                let info = sdrr.flash.as_ref().unwrap();
+                let board = info.board.as_ref().unwrap();
+                let fw_version = &info.version;
+                format!("One ROM {} - Firmware: {fw_version}", board_label(board))
+            }
+            Some(ParsedDevice::Schema(onerom)) if onerom.info().is_some() => {
+                let info = onerom.info().unwrap();
+                let hw_rev = onerom
+                    .metadata()
+                    .map(|m| m.hw.hw_rev.as_str())
+                    .unwrap_or("unknown");
+                let fw_version = format!(
+                    "v{}.{}.{}",
+                    info.major_version, info.minor_version, info.patch_version
+                );
+                let board_part = match Board::try_from_str(hw_rev) {
+                    Some(board) => board_label(&board),
+                    None => hw_rev.to_string(),
+                };
+                format!("One ROM {board_part} - Firmware: {fw_version}")
+            }
+            _ => "Unknown           - Firmware: n/a  ".to_string(),
         };
         write!(f, "{info_str} State: {} Serial: {serial}", self.state)
     }
@@ -105,8 +123,7 @@ impl Device {
     pub fn is_recognised(&self) -> bool {
         self.onerom
             .as_ref()
-            .map(|o| o.flash.is_some() || o.ram.is_some())
-            .unwrap_or(false)
+            .is_some_and(ParsedDevice::is_recognised)
     }
 
     pub fn is_running(&self) -> bool {
@@ -117,83 +134,102 @@ impl Device {
         self.usb_can_run
     }
 
-    pub fn update_onerom(&mut self, onerom: Sdrr) {
+    pub fn update_onerom(&mut self, onerom: ParsedDevice) {
         self.onerom = Some(onerom);
         self.update_state();
     }
 
     // Figure out the device state from the presence of the One ROM device
     // information
+    #[allow(clippy::wildcard_enum_match_arm)]
     fn update_state(&mut self) {
         self.usb_can_run = false;
         self.state = DeviceState::Unknown;
 
-        // Did we retrieve any valid One ROM information?
-        if self.onerom.is_none() {
-            // Nope.
+        let Some(onerom) = self.onerom.as_ref() else {
             return;
-        }
-        let onerom = self.onerom.as_ref().unwrap();
+        };
 
-        if onerom.flash.is_none() {
-            // No valid flash information.
-            return;
-        }
-        let flash = onerom.flash.as_ref().unwrap();
+        match onerom {
+            ParsedDevice::Original(sdrr) => {
+                if sdrr.flash.is_none() {
+                    return;
+                };
 
-        if let Some(runtime_info) = &onerom.ram {
-            // Is it actually running, or is it limping?
-            self.state = match runtime_info.limp_mode.as_ref() {
-                Some(limp_mode) if *limp_mode != sdrr_fw_parser::types::LimpMode::None => {
-                    DeviceState::Limp
+                if let Some(runtime_info) = &sdrr.ram {
+                    self.state = match runtime_info.limp_mode.as_ref() {
+                        Some(limp_mode)
+                            if *limp_mode != onerom_fw_parser::types::LimpMode::None =>
+                        {
+                            DeviceState::Limp
+                        }
+                        _ => DeviceState::Running,
+                    }
+                } else {
+                    self.state = DeviceState::Stopped;
                 }
-                _ => DeviceState::Running,
             }
-        } else {
-            // We have a valid firmware but it is not running.  We don't know
-            // if it's capable of running yet.
-            self.state = DeviceState::Stopped;
+            ParsedDevice::Schema(onerom) => {
+                if onerom.info().is_none() {
+                    return;
+                };
+
+                if let Some(runtime_info) = &onerom.runtime() {
+                    self.state = match runtime_info.limp_mode {
+                        onerom_metadata::LimpModePattern::LimpModeNone => DeviceState::Running,
+                        _ => DeviceState::Limp,
+                    }
+                } else {
+                    self.state = DeviceState::Stopped;
+                }
+            }
         }
 
-        // Now figure out whether it's capable of running while plugged into
-        // USB.
-        self.usb_can_run = flash.is_usb_run_capable();
+        self.usb_can_run = onerom.is_usb_run_capable();
     }
 
     pub fn get_active_rom_set_index(&self) -> Option<u8> {
-        self.onerom
-            .as_ref()
-            .and_then(|o| o.ram.as_ref())
-            .map(|ram| ram.rom_set_index)
+        self.onerom.as_ref()?.active_slot_index().map(|i| i as u8)
     }
 
-    /// Returns the active ROM set if available.
-    pub fn get_active_rom_set(&self) -> Option<&sdrr_fw_parser::SdrrRomSet> {
-        let flash_info = self.onerom.as_ref().and_then(|o| o.flash.as_ref())?;
-        let active_set_index = self.get_active_rom_set_index()? as usize;
-        flash_info.rom_sets.get(active_set_index)
-    }
-
-    /// Returns the active ROM type if available.
-    pub fn get_active_rom_type(&self) -> Option<sdrr_fw_parser::SdrrRomType> {
+    /// Returns (rom type label, rom size in bytes) for the active ROM,
+    /// if the device is running. Neutral across SDRR and schema devices.
+    fn active_rom_facts(&self) -> Option<(String, usize)> {
         if !self.is_running() {
             return None;
         }
-        self.get_active_rom_set()
-            .and_then(|set| set.roms.first())
-            .map(|rom| rom.rom_type)
+        let onerom = self.onerom.as_ref()?;
+        let slot = onerom.slots().find(|s| s.active)?;
+        let rom = slot.roms().next()?;
+        Some((rom.rom_type.into_owned(), rom.size))
     }
 
-    /// Returns the active ROM size if available
+    /// Returns the active ROM type label if available.
+    pub fn get_active_rom_type(&self) -> Option<String> {
+        self.active_rom_facts().map(|(ty, _)| ty)
+    }
+
+    /// Returns the active ROM size in bytes if available.
     pub fn get_active_rom_size(&self) -> Option<usize> {
-        self.get_active_rom_type()
-            .map(|rom_type| rom_type.rom_size())
+        self.active_rom_facts().map(|(_, size)| size)
     }
 
     /// Returns whether this device matches the provided serial pattern, which
     /// supports * and ? wildcards
     pub fn matches_serial(&self, pattern: &str) -> bool {
         matches_serial(self.serial.as_deref(), pattern)
+    }
+
+    /// The verbose one-line MCU / chip-ID summary shown beneath the device
+    /// header, e.g. `MCU: RP235xB Chip ID: FC9D67248E8E8023`. Returns `None`
+    /// if the chip ID has not been read; the `MCU:` prefix is dropped when the
+    /// package variant is unknown.
+    pub fn mcu_chip_id_line(&self) -> Option<String> {
+        let id = self.chip_id?;
+        Some(match self.rp_variant {
+            Some(variant) => format!("MCU: {variant} Chip ID: {id}"),
+            None => format!("Chip ID: {id}"),
+        })
     }
 
     /// Returns a sort key for this device, which sorts first by board type (with
@@ -203,13 +239,34 @@ impl Device {
         let board = self
             .onerom
             .as_ref()
-            .and_then(|o| o.flash.as_ref())
-            .and_then(|f| f.board.as_ref())
-            .map(|b| b.model().to_string())
+            .and_then(|o| match o {
+                ParsedDevice::Original(sdrr) => sdrr
+                    .flash
+                    .as_ref()
+                    .and_then(|f| f.board.as_ref())
+                    .map(|b| b.model().to_string()),
+                ParsedDevice::Schema(onerom) => onerom.metadata().map(|m| m.hw.hw_rev.clone()),
+            })
             .unwrap_or_else(|| "~".to_string()); // sorts after Z
         let serial = self.serial.clone().unwrap_or_else(|| "~".to_string());
         (board, serial)
     }
+}
+
+/// Human-readable board identity fragment, e.g. "Fire 24 F".
+/// Shared by both Display arms so SDRR and schema devices render identically.
+fn board_label(board: &Board) -> String {
+    let model = board.model();
+    let pins = board.chip_pins();
+    // Derive rev from the canonical name, not the raw hw_rev, so legacy
+    // aliases normalise to the same output.
+    let rev = board
+        .name()
+        .rsplit_once('-')
+        .map(|(_, rev)| rev)
+        .unwrap_or("")
+        .to_uppercase();
+    format!("{model} {pins} {rev}")
 }
 
 /// Returns whether a serial number matches a given pattern, which may include
@@ -273,5 +330,53 @@ pub async fn select_device(
                 }
             }
         }
+    }
+}
+
+/// Re-select a device by its (invariant) chip ID.
+///
+/// Used to re-find a device after a state change that may have altered its USB
+/// serial - entering the bootloader (where the serial reverts to the chip ID),
+/// or programming a serial override. Unlike [`select_device`], this does not
+/// rely on the serial string, which is not stable across those transitions.
+///
+/// If `chip_id` is `None` (the chip ID was never read), this falls back to
+/// auto-selecting a single connected device, erroring if more than one is
+/// present.
+pub async fn select_device_by_chip_id(
+    chip_id: Option<Rp235xChipId>,
+    unrecognised: bool,
+    vid_pid: &[(u16, u16)],
+) -> Result<Device, Error> {
+    let devices = enumerate_devices(unrecognised, vid_pid).await?;
+
+    if devices.is_empty() {
+        debug!("No devices found");
+        return Err(Error::NoDevices);
+    }
+
+    let Some(id) = chip_id else {
+        // No chip ID to match on; fall back to single-device auto-select.
+        if devices.len() > 1 {
+            let serials: Vec<String> = devices
+                .iter()
+                .map(|d| d.serial.as_deref().unwrap_or("(no serial)").to_string())
+                .collect();
+            return Err(Error::MultipleDevices(serials));
+        }
+        return Ok(devices.into_iter().next().unwrap());
+    };
+
+    let mut matched: Vec<Device> = devices
+        .into_iter()
+        .filter(|d| d.chip_id == Some(id))
+        .collect();
+
+    match matched.len() {
+        0 => Err(Error::DeviceNotFound(id.to_string())),
+        1 => Ok(matched.remove(0)),
+        // Chip IDs are unique, so more than one match indicates a bug or a
+        // read error rather than genuinely duplicate hardware.
+        _ => Err(Error::MultipleDevices(vec![id.to_string()])),
     }
 }

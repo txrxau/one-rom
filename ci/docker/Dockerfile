@@ -14,14 +14,17 @@ ARG BUILDPLATFORM
 ARG TARGETPLATFORM
 ARG TARGETARCH
 
-# Install base dependencies
+# Install base dependencies.
+#
+# libclang-dev is bindgen's, not the firmware's - nothing here is compiled with
+# clang.  onerom-fw-emulator's build script parses the firmware headers with
+# libclang to generate its FFI bindings, and panics if it cannot load it.
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     curl \
-    dfu-util \
     git \
-    jq \
+    libclang-dev \
     libcurl4-openssl-dev \
     libjson-c-dev \
     libusb-1.0-0-dev \
@@ -36,21 +39,38 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Download ARM toolchain based on target platform
-# See https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
-ARG ARM_GCC_VERSION=15.2.rel1
-RUN case "${TARGETPLATFORM}" in \
+# Download ARM toolchain based on target platform.
+#
+# No default: the version is pinned in ci/arm-toolchain-version and passed in by
+# ci/docker/build.sh and ci/docker/build-release.sh.  Baking a default here is
+# how this container came to be on a different compiler from everything else, so
+# an unset value is an error rather than a silent fallback.
+#
+# Arm moved toolchain hosting to gitlab.arm.com from 15.3.Rel1 onwards;
+# developer.arm.com carries 15.2.rel1 and earlier only.
+ARG ARM_GCC_VERSION
+RUN test -n "${ARM_GCC_VERSION}" || { \
+        echo "ARM_GCC_VERSION build-arg is required - build via ci/docker/build.sh," && \
+        echo "which passes the version pinned in ci/arm-toolchain-version." && \
+        exit 1; \
+    } && \
+    PLATFORM="${TARGETPLATFORM:-linux/$(dpkg --print-architecture)}" && \
+    case "${PLATFORM}" in \
     "linux/amd64") \
         ARCH_SUFFIX="x86_64" ;; \
     "linux/arm64") \
         ARCH_SUFFIX="aarch64" ;; \
     *) \
-        echo "Unsupported platform: ${TARGETPLATFORM}" && exit 1 ;; \
+        echo "Unsupported platform: ${PLATFORM}" && exit 1 ;; \
     esac && \
-    wget https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_GCC_VERSION}/binrel/arm-gnu-toolchain-${ARM_GCC_VERSION}-${ARCH_SUFFIX}-arm-none-eabi.tar.xz && \
-    tar -xf arm-gnu-toolchain-${ARM_GCC_VERSION}-${ARCH_SUFFIX}-arm-none-eabi.tar.xz && \
+    TARBALL="arm-gnu-toolchain-${ARM_GCC_VERSION}-${ARCH_SUFFIX}-arm-none-eabi.tar.xz" && \
+    BASE_URL="https://gitlab.arm.com/api/v4/projects/tooling%2Fgnu-toolchains-for-arm/packages/generic/gnu-toolchain/${ARM_GCC_VERSION}" && \
+    wget "${BASE_URL}/${TARBALL}" && \
+    wget "${BASE_URL}/${TARBALL}.sha256asc" && \
+    sha256sum -c "${TARBALL}.sha256asc" && \
+    tar -xf "${TARBALL}" && \
     mv arm-gnu-toolchain-${ARM_GCC_VERSION}-${ARCH_SUFFIX}-arm-none-eabi /opt/ && \
-    rm arm-gnu-toolchain-${ARM_GCC_VERSION}-${ARCH_SUFFIX}-arm-none-eabi.tar.xz && \
+    rm "${TARBALL}" "${TARBALL}.sha256asc" && \
     ln -s /opt/arm-gnu-toolchain-${ARM_GCC_VERSION}-${ARCH_SUFFIX}-arm-none-eabi /opt/arm-toolchain
 
 # Create build user with passwordless sudo
@@ -67,19 +87,41 @@ ENV TOOLCHAIN="/opt/arm-toolchain/bin"
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/home/build/.cargo/bin:${PATH}"
-# Force 0.31.0 as 0.32.0 is broken (#237)
-RUN cargo install cargo-dist --version "=0.31.0"
 RUN cargo install wasm-pack cross
-RUN rustup target install thumbv7em-none-eabihf
+# Nightly toolchain (with clippy/rustfmt and the RP2350 target) for building
+# One ROM Lab, the hardware tester, which pins nightly via its
+# rust-toolchain.toml.
+RUN rustup toolchain install nightly \
+    --component clippy,rustfmt \
+    --target thumbv8m.main-none-eabihf
 RUN rustup target install \
     x86_64-unknown-linux-gnu \
     aarch64-unknown-linux-gnu \
     x86_64-pc-windows-gnu \
     aarch64-pc-windows-gnullvm \
-    x86_64-pc-windows-msvc \
-    aarch64-pc-windows-msvc \
     x86_64-apple-darwin \
-    aarch64-apple-darwin
+    aarch64-apple-darwin \
+    wasm32-unknown-emscripten
+
+# Install the Emscripten SDK (for building One ROM Lens to wasm).  emcc/emar are
+# placed on PATH; EM_CONFIG points emcc at the activated SDK's config.
+#
+# Pinned, for the same reason as the Arm toolchain and with the same no-default
+# rule: the version comes from ci/emscripten-version via ci/docker/build.sh.
+# Tracking "latest" here means an emscripten release can break the container
+# with no change on our side.
+ARG EMSCRIPTEN_VERSION
+ENV EMSDK=/home/build/emsdk
+RUN test -n "${EMSCRIPTEN_VERSION}" || { \
+        echo "EMSCRIPTEN_VERSION build-arg is required - build via ci/docker/build.sh," && \
+        echo "which passes the version pinned in ci/emscripten-version." && \
+        exit 1; \
+    } && \
+    git clone https://github.com/emscripten-core/emsdk.git "${EMSDK}" && \
+    "${EMSDK}/emsdk" install "${EMSCRIPTEN_VERSION}" && \
+    "${EMSDK}/emsdk" activate "${EMSCRIPTEN_VERSION}"
+ENV EM_CONFIG="${EMSDK}/.emscripten"
+ENV PATH="${EMSDK}:${EMSDK}/upstream/emscripten:${PATH}"
 
 # Install probe-rs
 RUN curl --proto '=https' --tlsv1.2 -LsSf https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh | sh

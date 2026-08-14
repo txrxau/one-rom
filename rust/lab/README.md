@@ -1,83 +1,103 @@
 # One ROM Lab
 
-One ROM Lab firmware reads ROM images from external ROM chips (originals, One ROMs, and other replacements), by using the One ROM hardware with female socket placed on top of the ROM socket pins.  It can also be used to instrument the performance of these external ROM chips, by using additional equipment, such as logic analyzers or oscilloscopes.
+Alternate firmware for a One ROM **Fire** (RP2350) board that turns its ROM
+socket into a parallel bus reader and tester.  Flash it to a spare board, connect
+over USB, and drive it from an interactive shell.
 
-<div class="video-container">
-    <iframe 
-        width="560" 
-        height="315" 
-        src="https://www.youtube.com/embed/9QBlPToP_BQ" 
-        frameborder="0" 
-        allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" 
-        allowfullscreen>
-    </iframe>
-</div>
+Two things it is used for:
 
-You need female headers on the top of your One ROM PCB in order to use the Lab firmware. 
+- **Reading real chips** — mask ROMs, EPROMs and EEPROMs sitting in the socket,
+  output as a checksum, a hex dump or Intel HEX.
+- **Testing a One ROM under test** — checking it serves the right bytes at speed
+  and tristates its data lines when deselected.  This is how Fire 40 boards are
+  tested before shipping.
 
-One ROM Lab currently only support STM32F4 based One ROMs - a RP2350 is viable, with the appropriate changes to support `embassy-rp`.
+Fire only.  Lab refuses any board whose MCU is not an RP2350.
 
-## Validating One ROMs
+## Build and flash
 
-The current primary use case for lab is to validate One ROMs before shipping them to customers.  This is done by reading the ROM image, calculating its SHA1 hash, and comparing it to the expected hash from the database.
-
-To build One ROM Lab firmware for validating 24 pin One ROMs (with lab running on hw revision ice-24-usb-h) use:
+The board is put into BOOTSEL, then `picotool` loads over USB:
 
 ```bash
-cargo build --no-default-features --features validate-24-ice --target thumbv7em-none-eabihf --bin onerom-lab
+scripts/flash.sh                # board set at runtime, with B:<board>
+scripts/flash.sh fire-40-a      # bake in a default board
 ```
 
-To build One ROM Lab firmware for validating 28 pin One ROMs (with lab running on hw revision fire-28-a) use:
+The argument is a **board** name, not a chip type.  A single binary reads every
+chip type the board supports, so the only reason to bake in a board is
+convenience.
+
+The `z` command reboots back into BOOTSEL, so reflashing never needs the button.
+
+## Connect
+
+Lab presents a USB CDC serial port.  Connect at 115200:
 
 ```bash
-cargo build --no-default-features --features validate-28-fire --target thumbv8m.main-none-eabihf --bin onerom-lab-fire
+scripts/serial.sh /dev/cu.usbmodem1103
 ```
 
-Note that the 28 pin Fire version does not currently support USB.
+Nothing is printed until you press Enter — input is discarded until then, so a
+terminal opening mid-boot cannot leave you looking at a blank screen wondering.
+You then get a `> ` prompt, with line editing, arrow keys and a 16 entry command
+history.
 
-## Modes
+## Commands
 
-There are a number of modes of operation:
-- **Control** - **default** - is controlled via an external device using SWD.  When paired with `Airfrog` this allows the user to manually trigger ROM Reads using Airfrog's web UI.
-- **One-shot** - reads a ROM image once at startup and then stops.  This is useful for automated testing, or for use in environments where SWD is not available.  In this mode, ROM information is output via RTT.
-- **Continuous** - continuously reads a ROM image in a loop, with a brief pause between reads.
-- **QA** - similar to continuous, used to .
+Each command is a single letter, optionally followed by colon-separated
+arguments.  Give the command alone and it prompts for what it needs, remembering
+your last answer.
 
-These modes are mutually exclusive, and are selected at [build](#building) time using Cargo features.
-
-## Building
-
-There are different features to support:
-- Different STM32F4 variants
-- Different [modes](#modes)
-
-Supported STM32F4 variants:
-- `f401re`
-- `f405rg` - **default**
-- `f411re`
-- `f446re`
-
-Modes:
-- `control` - **default** - controlled via SWD (e.g. Airfrog UI)
-- `oneshot` - reads a ROM image once at startup and then stops
-- `repeat` - continuously reads an attached ROM image in a loop
-- `qa` - similar to repeat, designed for QA testing One ROMs
-
-Example build commands:
-
-```bash
-cargo build --release --no-default-features --features f411re,qa,usb
-cargo build --release --no-default-features --features f405rg,control
-cargo build --release --no-default-features --features f411re,oneshot
-cargo build --release --no-default-features --features f446re,repeat
+```text
+  B   Set One ROM Lab board type            B:<board>
+  r   Read ROM                              r[:<chip>[:<start>[:<len>[:<fmt>[:<cs1>[:<cs2>[:<cs3>]]]]]]]
+  b   Batch ROM read                        b[:<chip>[:<start>[:<len>[:<fmt>[:<secs>[:<cs1>[:<cs2>[:<cs3>]]]]]]]]
+  i   Chip type information                 i[:<chip>]
+  c   Set or change chip type               c:<chip>[:<cs1>[:<cs2>[:<cs3>]]]
+  f   Set or change output format
+  t   Toggle tri-state testing during checksum mode on and off
+  q   Quick read (uses default chip, range and format)
+  l   List chips supported by this board type
+  v   Display One ROM Lab version and hardware information
+  s   Display settings
+  p   Show board pin map (socket pin -> GPIO)   p[:<chip>]
+  T   List supported board types
+  z   Reset to bootloader
+  ?/h This help
 ```
 
-## Flashing
+Formats are `cs` (checksum and SHA1, the default), `hex` (hex dump) and `ihex`
+(Intel HEX).  Addresses are decimal unless prefixed `0x`, `0X` or `$`, and
+`len=0` means to the end of the ROM.
 
-If using `probe-rs` use `cargo run` instead of `cargo build` to automatically flash the firmware after building:
+Commands are case sensitive — `B` sets the board, `b` starts a batch read.
 
-```bash
-cargo build --release --no-default-features --features f405rg,control
-cargo build --release --no-default-features --features f411re,oneshot
-cargo build --release --no-default-features --features f446re,repeat
+## Chip select polarity
+
+Mask ROM chip selects are mask-programmed, so an unmarked chip may need any
+combination.  Pass `0` for active low, `1` for active high, or **`?` to
+auto-detect**:
+
+```text
+r:2364:0:0:cs:?
 ```
+
+Lab then reads the chip once per combination and flags the ones that produced
+something other than all `0x00` or all `0xFF` as `*** candidate ***`.
+
+## Tri-state testing
+
+In checksum mode, with `t` enabled, Lab drives each of `/OE` and `/CE` high
+independently and checks the data lines float — detected via the reader board's
+internal pull-downs.  The timing here is deliberately relaxed, to cope with weak
+pulls and the capacitance of the test setup.  Failures should be zero.
+
+For a 16-bit capable chip, Lab reads in both 8-bit and 16-bit modes and both the
+SHA1 and the 32-bit summing checksum should match.
+
+## Pin map
+
+`p` prints the board's socket pin to signal to GPIO mapping, including the X
+header, which is the fastest way to work out what is wired where when debugging
+hardware.  On Fire 32 and 40 boards, where socket pins are twinned across two
+GPIOs, `p` deliberately shows both even though the reader drives only the first.

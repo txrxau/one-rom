@@ -4,7 +4,7 @@
 //!
 //! Uses `airfrog-rpc` for the underlying RPC transport.
 //!
-//! The host can retrieve the RAM metada using `sdrr-fw-parser` which provides
+//! The host can retrieve the RAM metada using `onerom-fw-parser` which provides
 //! the RAM channel addresses required for RPC communication.
 //!
 //! See `airfrog::firmware::onerom_lab` for example host usage.
@@ -266,6 +266,7 @@ pub struct LabRomEntry {
 
 impl LabRomEntry {
     /// Get RomMetadata from the appropriate response
+    #[allow(clippy::wildcard_enum_match_arm)]
     pub fn from_buffer(buf: &[u8]) -> Result<Self, Error> {
         let mut pos = 0;
 

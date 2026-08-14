@@ -4,6 +4,11 @@
     "description": "One ROM chip configuration format.\n\nUsed to indicate:\n- What ROM chips, RAM chips and any other devices to emulate\n- What ROM images to include\n- Any overrides for the firmware build-time setting",
     "type": "object",
     "properties": {
+        "boot_logging": {
+            "description": "Whether to enable boot logging.  Logging is emitted over RTT, so a\ndebug probe must be attached to see it.  Compatible with\nswd_enabled = false, as SWD stays up for the whole of boot.",
+            "type": "boolean",
+            "default": false
+        },
         "categories": {
             "description": "Optional categories for this configuration, to aid in grouping,\nsorting, and searching of configurations.",
             "type": [
@@ -32,6 +37,13 @@
                 "null"
             ]
         },
+        "instance_name": {
+            "description": "Optional name for this One ROM instance",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
         "name": {
             "description": "Optional name for this configuration.  Is included in the description\noutput by the builder.",
             "type": [
@@ -45,6 +57,23 @@
                 "string",
                 "null"
             ]
+        },
+        "serial_override": {
+            "description": "Optional serial number override for this One ROM, overriding the stock\nUSB serial number (which is the MCU's unique chip ID).",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "swd_enabled": {
+            "description": "Whether to leave SWD enabled once the One ROM starts serving.\n\nWhen false, SWD is available for the whole of boot and is shut off\nimmediately before serving starts, staying off until the next reset.\nThis stops debug port accesses to SRAM stealing cycles from the\nserving DMAs.  Nothing is logged past that point, and plugins get no\nlogging.\n\nThis is not a debug lockout - the boot ROM runs before the One ROM\nfirmware does, and BOOTSEL/PICOBOOT are unaffected.",
+            "type": "boolean",
+            "default": true
+        },
+        "turbo_boot": {
+            "description": "Whether to boot fast.  Disables reading the image select jumpers.\nThe first non-plugin image is served.",
+            "type": "boolean",
+            "default": false
         },
         "version": {
             "description": "Configuration format version.",
@@ -61,6 +90,22 @@
             "description": "Chip configuration structure",
             "type": "object",
             "properties": {
+                "allow_cs_ignore": {
+                    "description": "Explicitly permit CS/CE/OE lines to be set to Ignore outside the\ncontexts where this is implicitly allowed:\n  - V2 multi-ROM set chips[1+] (secondary sockets — free pass)\n  - Lines with allow_ignore in chip_types.json (datasheet-defined)\n\nRequired for chip0 in multi-ROM sets and for single-chip sets\nwhere a line needs ignoring for custom circuit reasons.\nMisuse can cause bus contention — only set when intentional.",
+                    "type": "boolean",
+                    "default": false
+                },
+                "ce": {
+                    "description": "Optional Chip Enable logic override - only valid for chip types that\nhave a /CE control line.  In V2 multi-ROM sets, may be set to Ignore\nwhen /CE is tied active and /OE is the fly-leaded chip select, or vice\nversa.  Not valid for V1 configurations.",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/CsLogic"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
                 "cs1": {
                     "description": "Optional Chip Select 1 logic - only valid for Chip Types that have CS1",
                     "anyOf": [
@@ -94,6 +139,17 @@
                         }
                     ]
                 },
+                "cs4": {
+                    "description": "Optional Chip Select 4 logic - only valid for Chip Types that have CS4",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/CsLogic"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
                 "description": {
                     "description": "Optional description for this configuration.  This is included in the\ndescription output by the builder.",
                     "type": [
@@ -113,6 +169,10 @@
                     "type": "string",
                     "default": ""
                 },
+                "format": {
+                    "description": "Format of the supplied ROM image.  Defaults to raw binary.  Set to\n`ihex` to have the generator decode an Intel HEX file into a binary\nimage before use.",
+                    "$ref": "#/$defs/FileFormat"
+                },
                 "label": {
                     "description": "Optional label for this ROM image.  If specified, this is used in\nmetadata instead of the filename (which itself can be complex if\nextracting a file from an image and providing location information)",
                     "type": [
@@ -127,6 +187,10 @@
                         "null"
                     ]
                 },
+                "load_address": {
+                    "description": "For Intel HEX images ([`FileFormat::IntelHex`]), the absolute address\nthat maps to byte 0 of the ROM.  Record addresses below it are an\nerror; the highest address defines the image extent.  Accepts a decimal\nor a `0x`/`$`-prefixed hex value.  Must be 0 (unset) for binary images.\nDefaults to 0.",
+                    "$ref": "#/$defs/LoadAddress"
+                },
                 "location": {
                     "description": "Optional location within a larger image file.  Used to specify start\noffset and length within the file.  Useful when multiple ROM images\nare concatenated into a single file and one needs to be extracted.",
                     "anyOf": [
@@ -138,9 +202,27 @@
                         }
                     ]
                 },
+                "oe": {
+                    "description": "Optional Output Enable logic override - only valid for chip types that\nhave an /OE control line.  Not valid for V1 configurations.",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/CsLogic"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
                 "size_handling": {
                     "description": "Optional size handling configuration for this Chip.  Used to specify\nhandling when the image supplied isn't the correct size for this Chip\ntype.",
                     "$ref": "#/$defs/SizeHandling"
+                },
+                "transform": {
+                    "description": "Byte-level transformations to apply to the supplied image, in order.\n\nApplied after any [`Location`] slice and before the image is reconciled\nagainst the chip size by [`SizeHandling`], and after an Intel HEX image\nhas been decoded — so transforms behave the same whichever format the\nimage arrived in.  Order is significant; see the\n[`transform`] module.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/Transform"
+                    }
                 },
                 "type": {
                     "description": "Type of ROM",
@@ -156,7 +238,7 @@
             "type": "object",
             "properties": {
                 "chips": {
-                    "description": "Array of chip configurations in this set.  Contains 1 member for single\nchip sets, and multiple members for multi-ROM and banked ROM sets.",
+                    "description": "Array of chip configurations in this set.  Contains 1 member for single\nchip sets, and multiple members for multi-ROM and banked ROM sets.\n\nFor multi-ROM sets, the array order determines X pin assignment:\n  chip0 — primary socket (One ROM physically installed here)\n  chip1 — X1 pin monitors this socket's chip select via fly-lead\n  chip2 — X2 pin monitors this socket's chip select via fly-lead\nMaximum 3 chips per multi-ROM set (primary + 2 X pins).",
                     "type": "array",
                     "items": {
                         "$ref": "#/$defs/ChipConfig"
@@ -245,6 +327,11 @@
                     "const": "2704"
                 },
                 {
+                    "description": "512B bipolar PROM with three-state outputs and four fixed-polarity chip selects - 512 bytes, 24-pin package",
+                    "type": "string",
+                    "const": "HM7641"
+                },
+                {
                     "description": "1KB EPROM with multiple supply voltages - 1024 bytes, 24-pin package",
                     "type": "string",
                     "const": "2708"
@@ -318,6 +405,11 @@
                     "description": "32KB EEPROM with fixed active-low CE/OE - 32768 bytes, 28-pin package",
                     "type": "string",
                     "const": "28C256"
+                },
+                {
+                    "description": "32KB (32768 x 8-bit) Static RAM with fixed active-low CE/OE/WE - 32768 bytes, 28-pin package",
+                    "type": "string",
+                    "const": "62256"
                 },
                 {
                     "description": "A composite ROM type, serving a combined 23256 and 23128 for the Sinclair QL, with a single configured CS line and is de-selected when A14 & A15 are both high - 49152 bytes, 28-pin package",
@@ -431,6 +523,21 @@
                     "default": true
                 }
             }
+        },
+        "FileFormat": {
+            "description": "Format of a supplied ROM image file.\n\nThe default, [`FileFormat::Binary`], treats the supplied file as a raw\nbinary image.  [`FileFormat::IntelHex`] decodes an Intel HEX file into a\nbinary image before it is placed into the firmware; see the\n[`ihex`](crate::ihex) module for the supported record types and the\ndecoding rules.",
+            "oneOf": [
+                {
+                    "description": "Raw binary image (default).",
+                    "type": "string",
+                    "const": "binary"
+                },
+                {
+                    "description": "Intel HEX image, decoded to a binary image before use.",
+                    "type": "string",
+                    "const": "ihex"
+                }
+            ]
         },
         "FireConfig": {
             "description": "Fire configuration structure",
@@ -644,6 +751,19 @@
                 }
             }
         },
+        "LoadAddress": {
+            "description": "Intel HEX load address: a non-negative integer, or a string in decimal or 0x-/$-prefixed hexadecimal.",
+            "oneOf": [
+                {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                {
+                    "type": "string",
+                    "pattern": "^(0[xX]|\\$)?[0-9a-fA-F]+$"
+                }
+            ]
+        },
         "Location": {
             "description": "Location within a larger Chip image that the specific image to use resides",
             "type": "object",
@@ -731,6 +851,54 @@
                     "description": "Pads the image out with [`PAD_BLANK_BYTE`].",
                     "type": "string",
                     "const": "pad"
+                }
+            ]
+        },
+        "Transform": {
+            "description": "A single byte-level transformation of a supplied ROM image.\n\nSee the [module documentation](self) for where transforms run in the image\npipeline, why order matters, and the text encoding used by the CLI and by\nfirmware metadata.\n\nThis enum is `#[non_exhaustive]`: it is expected to grow (bit-order\nreversal and inversion are the obvious candidates), and adding a variant\nshould not be a breaking change for downstream crates.",
+            "oneOf": [
+                {
+                    "description": "Reverse the byte order within each 16-bit word throughout the image.\n\nRequired for 16-bit wide parts (e.g. 27C400) when the source image was\nproduced with the opposite byte order to the one One ROM serves.\n\nThe image must have an even length.  If it does not, the chip's\n[`SizeHandling`] decides: `pad` appends one blank byte, `truncate`\ndrops the trailing byte, and `none`/`duplicate` report\n[`TransformError::OddLength`].",
+                    "type": "string",
+                    "const": "swap_bytes"
+                },
+                {
+                    "description": "Extract one lane from an interleaved image.\n\nThe image contains `stride` interleaved lanes of `bytes` bytes each;\nlane `offset` is kept and the rest discarded.  The result is `1/stride`\nof the input length.\n\n| Source             | Wanted            | `offset` | `stride` | `bytes` |\n|--------------------|-------------------|----------|----------|---------|\n| 16-bit interleaved | even / odd bytes  | 0 / 1    | 2        | 1       |\n| 32-bit interleaved | byte *n* of 4     | 0–3      | 4        | 1       |\n| 32-bit interleaved | one 16-bit half   | 0 / 1    | 2        | 2       |\n\nThe image length must be a multiple of `bytes * stride` (one full set\nof lanes); a ragged tail means the image is not the interleaved set it\nwas taken for, so it is reported rather than silently dropped.",
+                    "type": "object",
+                    "properties": {
+                        "deinterleave": {
+                            "type": "object",
+                            "properties": {
+                                "bytes": {
+                                    "description": "Width of one lane, in bytes.  Defaults to 1.\n\nThis is the width of the device the lane feeds: 1 for an 8-bit\npart, 2 to keep 16-bit words intact.",
+                                    "type": "integer",
+                                    "format": "uint",
+                                    "default": 1,
+                                    "minimum": 0
+                                },
+                                "offset": {
+                                    "description": "Which lane to keep.  Must be less than `stride`.",
+                                    "type": "integer",
+                                    "format": "uint",
+                                    "minimum": 0
+                                },
+                                "stride": {
+                                    "description": "How many lanes the image interleaves.  Must be at least 2.",
+                                    "type": "integer",
+                                    "format": "uint",
+                                    "minimum": 0
+                                }
+                            },
+                            "required": [
+                                "offset",
+                                "stride"
+                            ]
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "deinterleave"
+                    ]
                 }
             ]
         }

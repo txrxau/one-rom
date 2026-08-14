@@ -19,20 +19,21 @@ pub async fn scan(options: &Options, board_filter: Option<Board>) -> Result<Vec<
     // Now filter based on the board_type
     if let Some(board) = board_filter.as_ref() {
         devices.retain(|d| {
-            if let Some(onerom) = d.onerom.as_ref()
-                && let Some(flash) = onerom.flash.as_ref()
-                && let Some(flash_board) = flash.board.as_ref()
-            {
-                flash_board == board
-            } else {
-                false
-            }
+            d.onerom
+                .as_ref()
+                .and_then(|o| o.get_board())
+                .map(|b| &b == board)
+                .unwrap_or(false)
         });
     }
 
-    // And/or the device
+    // And/or the device. Prefer the invariant chip ID; fall back to the serial
+    // only when the chip ID of the selected device isn't known.
     if let Some(device) = options.device.as_ref() {
-        devices.retain(|d| d.serial == device.serial);
+        match device.chip_id {
+            Some(id) => devices.retain(|d| d.chip_id == Some(id)),
+            None => devices.retain(|d| d.serial == device.serial),
+        }
     }
 
     devices.sort_by_key(|d| d.sort_key());

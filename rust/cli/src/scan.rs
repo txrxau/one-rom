@@ -8,8 +8,7 @@ use onerom_cli::{Error, Options};
 
 pub async fn cmd_scan(options: &Options, args: &args::scan::ScanArgs) -> Result<(), Error> {
     if args.list_boards {
-        let supported = utils::get_supported_boards();
-        println!("One ROM board types: {supported}");
+        crate::board::print_board_types();
         return Ok(());
     }
 
@@ -18,6 +17,9 @@ pub async fn cmd_scan(options: &Options, args: &args::scan::ScanArgs) -> Result<
     let board = if let Some(board) = &args.board {
         let board = onerom_config::hw::Board::try_from_str(board)
             .ok_or_else(|| Error::InvalidBoard(board.clone(), utils::get_supported_boards()))?;
+        // A scan reaches devices over picoboot, so an Ice board can never be
+        // among the results - filtering for one is a mistake worth naming.
+        utils::check_fire_board(&board)?;
         println!("Scanning for {board} ... ");
         Some(board)
     } else {
@@ -47,12 +49,20 @@ pub async fn cmd_scan(options: &Options, args: &args::scan::ScanArgs) -> Result<
 
     for d in &devices {
         if args.slots {
+            // output_slot_info prints the device header followed by the MCU /
+            // chip-ID line (when verbose) and the slot detail.
             println!("---");
             crate::inspect::output_slot_info(d, options, "")
+                .await
                 .inspect_err(|_| log::error!("Failed to read slots"))
                 .ok();
         } else {
             println!("  {d}");
+            if options.verbose
+                && let Some(line) = d.mcu_chip_id_line()
+            {
+                println!("  {line}");
+            }
         }
     }
 

@@ -13,7 +13,7 @@ use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 
 use onerom_config::fw::FirmwareProperties;
-use onerom_gen::builder::{Builder, FileData};
+use onerom_gen::{Builder, FileData};
 use onerom_gen::{FIRMWARE_SIZE, MAX_METADATA_LEN};
 
 use net::{fetch_rom_file, fetch_rom_file_async};
@@ -147,7 +147,7 @@ pub fn get_rom_files(builder: &mut Builder) -> Result<(), Error> {
         let (data, cache) = fetch_rom_file(&source, cache, extract, true)?;
 
         builder
-            .add_file(FileData { id: spec.id, data })
+            .add_file(FileData::new(spec.id, data))
             .map_err(Error::build)?;
 
         // Cache the returned file
@@ -177,7 +177,7 @@ pub async fn get_rom_files_async(builder: &mut Builder) -> Result<(), Error> {
         let (data, cache) = fetch_rom_file_async(&source, cache, extract, true).await?;
 
         builder
-            .add_file(FileData { id: spec.id, data })
+            .add_file(FileData::new(spec.id, data))
             .map_err(Error::build)?;
 
         // Cache the returned file

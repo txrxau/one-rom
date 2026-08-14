@@ -12,6 +12,7 @@ mod tests {
             ControlLine {
                 pin: 20,
                 line_type: ControlLineType::Configurable,
+                allow_ignore: false,
             },
         );
 
@@ -28,6 +29,9 @@ mod tests {
             control,
             programming: None,
             power: None,
+            deselect_when_address_all_high: None,
+            allow_mixed_control: false,
+            rbcp_chip_type: 0,
         }
     }
 
@@ -38,6 +42,7 @@ mod tests {
             ControlLine {
                 pin: 20,
                 line_type: ControlLineType::FixedActiveLow,
+                allow_ignore: false,
             },
         );
         control.insert(
@@ -45,6 +50,7 @@ mod tests {
             ControlLine {
                 pin: 22,
                 line_type: ControlLineType::FixedActiveLow,
+                allow_ignore: false,
             },
         );
 
@@ -71,6 +77,9 @@ mod tests {
                 }),
                 pe: None,
             }),
+            deselect_when_address_all_high: None,
+            allow_mixed_control: false,
+            rbcp_chip_type: 11,
         }
     }
 
@@ -179,6 +188,6 @@ mod tests {
         assert_eq!(chip_27512.address.len(), 16);
         assert_eq!(chip_27512.address[15], 1);
         assert_eq!(chip_27512.control.len(), 2);
-        assert!(!chip_27512.programming.is_none());
+        assert!(chip_27512.programming.is_some());
     }
 }

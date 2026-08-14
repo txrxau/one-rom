@@ -13,10 +13,10 @@ use crate::firmware::{
     acquire_firmware, build_rom_image, confirm_slot_overrides, resolve_config_json,
     verify_assembled_firmware,
 };
-use crate::utils::{check_device, resolve_board};
-use onerom_cli::device::select_device;
+use crate::utils::{check_device, check_fire_board_optional, resolve_board};
+use onerom_cli::device::select_device_by_chip_id;
 use onerom_cli::plugin::{parse_plugins, resolve_plugins};
-use onerom_cli::slot::{check_slot_confirmations, save_config};
+use onerom_cli::slot::{GlobalConfig, check_slot_confirmations, save_config};
 use onerom_cli::usb::{RebootArgs, flash_program, flash_program_read, reboot};
 use onerom_cli::{Error, Options};
 
@@ -96,15 +96,30 @@ async fn build_and_assemble(
     let (firmware_data, version, _version_str) =
         acquire_firmware(options, &args.base_firmware, &args.version, board, mcu).await?;
 
-    let plugins = resolve_plugins(&parse_plugins(&args.plugin)?, Some(version)).await?;
+    let plugins = resolve_plugins(
+        &parse_plugins(&args.plugin)?,
+        &version,
+        &onerom_cli::CliFetch,
+    )
+    .await?;
+
+    let global_config = GlobalConfig {
+        config_name: args.config_name.clone(),
+        config_description: args.config_description.clone(),
+        instance_name: args.instance_name.clone(),
+        serial_override: args.serial_override.clone(),
+        boot_logging: args.logging,
+        disable_swd: args.disable_swd,
+        turbo_boot: args.turbo_boot,
+    };
 
     let config_json = resolve_config_json(
         args.config_file.as_deref(),
         &args.slot,
         args.no_config,
         board,
-        args.config_name.as_deref(),
-        args.config_description.as_deref(),
+        &version,
+        Some(&global_config),
         &plugins,
     )?;
 
@@ -116,7 +131,7 @@ async fn build_and_assemble(
     }
 
     let (fw_props, metadata, image_data, desc) =
-        build_rom_image(options, &config_json, version, *board, *mcu).await?;
+        build_rom_image(options, &config_json, version, *board, *mcu, args.force).await?;
 
     validate_sizes(&fw_props, &firmware_data, &metadata, &image_data)?;
 
@@ -163,11 +178,11 @@ async fn reboot_to_stopped_if_running(options: &mut Options) -> Result<(), Error
     if options.verbose {
         println!("Device is running, rebooting into stopped mode...");
     }
-    let serial = device.serial.clone();
+    let chip_id = device.chip_id;
     reboot(device, &RebootArgs::stopped(false, false)).await?;
 
     let new_device =
-        select_device(serial.as_deref(), options.unrecognised, &options.vid_pid).await?;
+        select_device_by_chip_id(chip_id, options.unrecognised, &options.vid_pid).await?;
     if new_device.is_running() {
         return Err(Error::DeviceStillRunning);
     }
@@ -186,12 +201,12 @@ async fn reboot_and_rescan(options: &mut Options, reboot_args: &RebootArgs) -> R
     if options.verbose {
         println!("Rebooting device...");
     }
-    let serial = device.serial.clone();
+    let chip_id = device.chip_id;
     reboot(device, reboot_args).await?;
 
     if !reboot_args.fast {
         let device =
-            select_device(serial.as_deref(), options.unrecognised, &options.vid_pid).await?;
+            select_device_by_chip_id(chip_id, options.unrecognised, &options.vid_pid).await?;
         if options.verbose {
             println!("{device}");
         }
@@ -212,6 +227,7 @@ pub async fn cmd_program(
     // Board must be resolved before acquire_program_image so it is available
     // for chip type validation when parsing --slot arguments.
     let board = resolve_board(options, &args.board)?;
+    check_fire_board_optional(&board)?;
     let mcu = Variant::RP2350;
 
     if let Some(b) = &board
@@ -222,7 +238,7 @@ pub async fn cmd_program(
     }
 
     let data = acquire_program_image(options, args, &board, &mcu).await?;
-    verify_assembled_firmware(options, &data, args.force).await?;
+    verify_assembled_firmware(options, &data, args.force, board).await?;
 
     loop {
         if let Some(out) = &args.output {
@@ -243,6 +259,7 @@ pub async fn cmd_program(
             if let Some(device) = options.device.as_ref() {
                 println!("Reading device after programming...");
                 crate::inspect::output_slot_info(device, options, "")
+                    .await
                     .inspect_err(|_| log::error!("Failed to read slots after programming"))?;
             } else {
                 eprintln!("Failed to read device after programming");

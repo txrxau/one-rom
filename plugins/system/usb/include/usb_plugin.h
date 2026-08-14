@@ -12,6 +12,7 @@
 #include "include.h"
 #include "usb_custom_pbx.h"
 #include "usb_led.h"
+#include "usb_gpio.h"
 
 // Context structure for our plugin
 typedef struct {
@@ -20,13 +21,31 @@ typedef struct {
     ora_debug_log_fn_t debug;
     ora_err_log_fn_t err_log;
     ora_set_status_led_fn_t set_status_led;
+    ora_get_active_ram_slot_fn_t get_active_ram_slot;
+    ora_get_ram_slot_info_fn_t get_ram_slot_info;
+    ora_read_ram_rom_slot_fn_t read_ram_rom_slot;
+    ora_reprogram_ram_rom_slot_fn_t reprogram_ram_rom_slot;
+
+    // GPIO control.  Both are NULL on firmware that predates the GPIO plugin
+    // API (added in firmware 0.7.1); see gpio_init_caps().
+    ora_gpio_set_fn_t gpio_set;
+    ora_gpio_query_fn_t gpio_query;
+
+    // What ONEROM_CMD_GET_CAPS reports, decided once at init.
+    //
+    // features is a ONEROM_FEAT_* bitmap, and num_gpios the running RP2350
+    // variant's GPIO count.  Both are zero when the running firmware cannot
+    // support GPIO control, which is what keeps the plugin's min_fw_version at
+    // 0.7.0: the host is told the commands are unavailable rather than the
+    // plugin refusing to load.
+    uint32_t features;
+    uint8_t num_gpios;
+
     uint32_t timer_ms;
-    const sdrr_runtime_info_t *runtime;
-    const sdrr_info_t *firmware;
-    ora_get_chip_size_from_type_fn_t get_chip_size_from_type;
-    const sdrr_rom_set_t *active_rom_set;
     onerom_pending_t pending;
+    onerom_in_xfer_t in_xfer;
     led_status_t led_status;
+    gpio_status_t gpio_status;
 } usb_plugin_context_t;
 
 // Forward declaration of the context, which we define in usb_main.c
@@ -42,6 +61,12 @@ bool usb_picoboot_control_xfer_cb(
 void usb_picoboot_tx_cb(uint8_t idx, uint32_t sent_bytes);
 void usb_picoboot_rx_cb(uint8_t idx, uint8_t const *buf, uint32_t count);
 void usb_picoboot_task(void);
+
+// Resolve a configured USB serial override from device metadata, defined in
+// usb_main.c.  Widens the override into desc_str and returns the number of
+// code units, or 0 when no override applies (so the caller falls back to the
+// chip-ID serial).
+size_t usb_get_serial(uint16_t *desc_str, size_t max_chars);
 
 // Logging macros
 #if defined(DEBUG)

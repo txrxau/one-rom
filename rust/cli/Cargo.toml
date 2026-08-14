@@ -1,6 +1,6 @@
 [package]
 name = "onerom-cli"
-version = "0.1.10"
+version = "0.3.0"
 edition = "2024"
 authors = ["Piers Finlayson <piers@piers.rocks>"]
 license = "MIT"
@@ -20,12 +20,14 @@ name = "onerom"
 path = "src/main.rs"
 
 [dependencies]
-onerom-config = { path="../config", version = "0.4.12" }
-onerom-fw = { path="../fw", version = "0.1.23" }
-onerom-gen = { path="../gen", version = "0.5.11" }
-sdrr-fw-parser = { path="../sdrr-fw-parser", version = "0.6.14" }
+onerom-app = { workspace = true }
+onerom-config = { workspace = true }
+onerom-fw = { workspace = true }
+onerom-gen = { workspace = true }
+onerom-fw-parser = { workspace = true }
+onerom-metadata = { workspace = true }
 
-picoboot = { version = "0.2.3", features = ["reader", "tokio"] }
+picoboot = { version = "0.2.5", features = ["reader", "tokio"] }
 
 base64 = { version = "0.22" }
 bytes = "1.10"
@@ -70,3 +72,5 @@ assets = [
     ["target/release/onerom", "usr/bin/", "755"],
     ["scripts/69-onerom-cli.rules", "lib/udev/rules.d/69-onerom-cli.rules", "644"],
 ]
+[lints]
+workspace = true

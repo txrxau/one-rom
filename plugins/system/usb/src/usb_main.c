@@ -20,7 +20,7 @@ void usb_main(
     ora_plugin_type_t plugin_type,
     const ora_entry_args_t *entry_args
 );
-__attribute__((section(".plugin_header")))
+ORA_SECTION(".plugin_header")
 const ora_plugin_header_t ora_plugin_header = {
     .magic    = ORA_PLUGIN_MAGIC,
     .api_version  = ORA_PLUGIN_VERSION_1,
@@ -34,8 +34,8 @@ const ora_plugin_header_t ora_plugin_header = {
     .overrides1 = ORA_OVERRIDE1_DISABLE_VBUS_DETECT,
     .properties1 = ORA_PROPERTY1_SUPPORTS_USB_RUNNING | ORA_PROPERTY1_SUPPORTS_YIELD,
     .min_fw_major_version = 0,
-    .min_fw_minor_version = 6,
-    .min_fw_patch_version = 9,
+    .min_fw_minor_version = 7,
+    .min_fw_patch_version = 0,
     .reserved = {0},
 };
 
@@ -124,16 +124,41 @@ void usb_plugin_task(void) {
     }
 
     led_handle_ongoing_led_modes();
+
+    // ONEROM_CMD_GPIO_SET is applied in the dispatch handler; only the timed
+    // release of a bounded hold is deferred to here, where the millisecond
+    // timer can be checked.
+    gpio_handle_pending_releases();
 }
 
+// Resolve the USB serial override from device metadata and widen it into the
+// UTF-16 descriptor buffer.  Returns the number of code units written, or 0
+// when there is no override to apply - either the running firmware predates the
+// metadata getter, or no override is set - so the caller falls back to the
+// chip-ID serial.
+//
+// The override string lives in flash and is read on demand (zero-copy); nothing
+// is cached, and the metadata getter is only looked up here, at descriptor
+// time.  An override longer than max_chars is truncated, so the descriptor
+// never overruns.  min_fw is unaffected: absence of the getter is handled, not
+// required.
 size_t usb_get_serial(uint16_t *desc_str, size_t max_chars) {
-    const char serial[] = "dummy serial";
-    size_t len = strlen(serial);
-    if (len > max_chars) {
-        len = max_chars;
+    ora_get_metadata_str_fn_t get_metadata_str =
+        context.ora_lookup_fn(ORA_ID_GET_METADATA_STR);
+    if (get_metadata_str == NULL) {
+        return 0;
     }
-    for (size_t i = 0; i < len; i++) {
-        desc_str[i] = serial[i];
+
+    const char *serial = NULL;
+    if (get_metadata_str(ORA_METADATA_KEY_SERIAL_OVERRIDE, &serial) != ORA_RESULT_OK
+        || serial == NULL) {
+        return 0;
+    }
+
+    size_t len = 0;
+    while (serial[len] != '\0' && len < max_chars) {
+        desc_str[len] = (uint16_t)(uint8_t)serial[len];
+        len++;
     }
     return len;
 }
@@ -148,18 +173,18 @@ void usb_init(ora_lookup_fn_t ora_lookup_fn) {
     ora_setup_usb_fn_t setup_usb = ora_lookup_fn(ORA_ID_SETUP_USB);
     ora_enable_irq_fn_t enable_irq = ora_lookup_fn(ORA_ID_ENABLE_IRQ);
     ora_get_clkref_mhz_fn_t get_clkref_mhz = ora_lookup_fn(ORA_ID_GET_CLKREF_MHZ);
-    ora_get_firmware_info_fn_t get_firmware_info = ora_lookup_fn(ORA_ID_GET_FIRMWARE_INFO);
-    ora_get_runtime_info_fn_t get_runtime_info = ora_lookup_fn(ORA_ID_GET_RUNTIME_INFO);
-    context.get_chip_size_from_type = ora_lookup_fn(ORA_ID_GET_CHIP_SIZE_FROM_TYPE);
     context.set_status_led = ora_lookup_fn(ORA_ID_SET_STATUS_LED);
-
+    context.get_active_ram_slot = ora_lookup_fn(ORA_ID_GET_ACTIVE_RAM_SLOT);
+    context.get_ram_slot_info = ora_lookup_fn(ORA_ID_GET_RAM_SLOT_INFO);
+    context.read_ram_rom_slot = ora_lookup_fn(ORA_ID_READ_RAM_ROM_SLOT);
+    context.reprogram_ram_rom_slot = ora_lookup_fn(ORA_ID_REPROGRAM_RAM_ROM_SLOT);
     // Can't log until we have the log functions
     DEBUG("USB plugin started");
 
-    // Get firmware and runtime information
-    context.runtime = get_runtime_info();
-    context.firmware = get_firmware_info();
-    context.active_rom_set = app_get_active_rom_set(&context);
+    // Resolve the GPIO API and decide what the GPIO commands can offer.  Done
+    // once, here, because none of it can change while the plugin runs - and
+    // because probing it per request would put ORA lookups on the command path.
+    gpio_init_caps();
 
     // Set up USB.  tinyusb will register its own IRQ handler, using the API
     // functions we provide.

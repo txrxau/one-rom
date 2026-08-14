@@ -8,18 +8,18 @@ OBJCOPY := $(if $(TOOLCHAIN),$(TOOLCHAIN)/arm-none-eabi-objcopy,arm-none-eabi-ob
 OBJDUMP := $(if $(TOOLCHAIN),$(TOOLCHAIN)/arm-none-eabi-objdump,arm-none-eabi-objdump)
 
 MAJOR_VERSION := 0
-MINOR_VERSION := 1
-PATCH_VERSION := 2
+MINOR_VERSION := 2
+PATCH_VERSION := 1
 BUILD_VERSION := 0
 
 TINYUSB_DIR   := tinyusb
 PICOBOOTX_DIR := picobootx
 PICO_SDKLESS_DIR := pico-sdkless
 
-ORA_DIR := ../../../sdrr/ora
+ORA_DIR := ../../../firmware/ora
 ORA_INCLUDE := -I$(ORA_DIR)
-SDRR_INCLUDE := -I../../../sdrr/include -I../../../output
-SEGGER_INCLUDE := -I../../../sdrr/segger-rtt/RTT -I../../../sdrr/segger-rtt/Config
+SDRR_INCLUDE := -I../../../firmware/include -I../../../firmware/generated
+SEGGER_INCLUDE := -I../../../firmware/segger-rtt/RTT -I../../../firmware/segger-rtt/Config
 PLUGIN_INCLUDE := -I.
 
 BUILD_DIR := build
@@ -41,7 +41,7 @@ PLUGIN_PREFIX := usb_system_plugin
 ELF := $(BUILD_DIR)/$(PLUGIN_PREFIX).elf
 BIN := $(BUILD_DIR)/$(PLUGIN_PREFIX).bin
 
-SRC := src/usb_descriptors.c src/usb_picobootx.c src/usb_rom.c src/usb_led.c src/usb_main.c
+SRC := src/usb_descriptors.c src/usb_picobootx.c src/usb_rom.c src/usb_led.c src/usb_gpio.c src/usb_main.c
 
 CFLAGS := -mcpu=cortex-m33 -mthumb -mfloat-abi=hard -mfpu=fpv5-sp-d16 \
           -O2 -Wall -Wextra -Werror \
@@ -52,10 +52,11 @@ CFLAGS := -mcpu=cortex-m33 -mthumb -mfloat-abi=hard -mfpu=fpv5-sp-d16 \
           $(SDRR_INCLUDE) $(SEGGER_INCLUDE) $(ORA_INCLUDE) $(PLUGIN_INCLUDE) \
 		  -Iinclude -I$(PICO_SDKLESS_DIR)/include \
           $(addprefix -I,$(TINYUSB_INCLUDE_DIRS)) \
-		  $(addprefix -I,$(PICOBOOTX_INCLUDE_DIRS))
+		  $(addprefix -I,$(PICOBOOTX_INCLUDE_DIRS)) \
+		  -std=c11
 
 LDFLAGS := -nostdlib \
-           -T ../../../sdrr/ora/plugin.ld \
+           -T ../../../firmware/ora/plugin.ld \
            -Wl,--defsym,PLUGIN_TYPE=0 \
            -Wl,--fatal-warnings \
 		   -Wl,--no-warn-rwx-segments \

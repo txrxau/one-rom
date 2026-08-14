@@ -8,6 +8,12 @@ on:
       - '!rust/studio/README.md'
       - '!rust/studio/CHANGELOG.md'
 
+# Studio is fmt- and clippy-checked by ci/rust-lint.sh, with the rest of the
+# workspace, rather than here: this workflow only fires on rust/studio/**, so a
+# lint job here could not catch a workspace-wide change that breaks Studio.
+# What is left here is the cross-platform packaging, which ci.yml does not do -
+# it builds Studio for the host only.
+
 jobs:
   # Builds Windows (x86_64) installer
   # DO NOT RELEASE THIS VERSION

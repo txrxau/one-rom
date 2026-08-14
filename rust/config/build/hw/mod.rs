@@ -44,12 +44,10 @@ pub fn build(manifest_path: &Path) {
 
     // Write generated files
     let generated_path = manifest_path.join("src").join(HW_GENERATED_RS_FILENAME);
-    fs::write(&generated_path, &generated_code)
-        .unwrap_or_else(|e| panic!("Failed to write {}: {}", generated_path.display(), e));
+    crate::fmt::write_rust(&generated_path, &generated_code);
 
     let mod_path = manifest_path.join("src").join(HW_MOD_RS_FILENAME);
-    fs::write(&mod_path, &lib_code)
-        .unwrap_or_else(|e| panic!("Failed to write {}: {}", mod_path.display(), e));
+    crate::fmt::write_rust(&mod_path, &lib_code);
 }
 
 fn get_config_dirs(repo_root: &Path) -> Vec<std::path::PathBuf> {
@@ -338,8 +336,11 @@ fn generate_lib_rs(configs: &[HwConfigData]) -> String {
     code.push_str("\n#![deny(missing_docs)]\n");
     code.push_str("#![deny(unsafe_code)]\n\n");
 
-    code.push_str("mod generated;\n\n");
+    code.push_str("mod generated;\n");
+    code.push_str("mod header;\n");
+    code.push_str("mod helpers;\n\n");
     code.push_str("pub use generated::*;\n");
+    code.push_str("pub use header::*;\n");
 
     code
 }
@@ -353,10 +354,21 @@ fn generate_rust_code(configs: &[HwConfigData]) -> String {
     code.push_str("// Copyright (C) 2025 Piers Finlayson <piers@piers.rocks>\n");
     code.push_str("//\n");
     code.push_str("// MIT License\n\n");
-    code.push_str("#![allow(dead_code)]\n\n");
+    code.push_str("#![allow(dead_code)]\n");
+    // The generated board tables match exhaustively over generated enums with
+    // a catch-all arm.  The workspace enables clippy::wildcard_enum_match_arm
+    // so that a new variant of a *hand-written* enum is caught; here the
+    // wildcards are emitted deliberately and there is no author to warn, so
+    // the lint is switched off at generation time - in the same spirit as the
+    // rustfmt pass that keeps this file clean for the format gate.
+    code.push_str("#![allow(clippy::wildcard_enum_match_arm)]\n\n");
 
     code.push_str("use crate::chip::{ChipType, chip_type_names_for_pins};\n");
-    code.push_str("use crate::mcu::{Port, Family};\n\n");
+    code.push_str("use crate::mcu::{Port, Family, RpVariant};\n");
+    code.push_str("#[allow(unused_imports)]\n");
+    code.push_str(
+        "use crate::hw::header::{JumperHeader, HeaderColumn, HeaderSlot, HeaderRole};\n\n",
+    );
 
     // Generate models
     code.push_str(&generate_hw_models(configs));
@@ -462,6 +474,9 @@ fn generate_hw_config_impl(configs: &[HwConfigData]) -> String {
     code.push_str(&generate_jumper_methods(configs));
     code.push_str("\n\n");
 
+    code.push_str(&generate_jumper_header_method(configs));
+    code.push_str("\n\n");
+
     code.push_str(&generate_pin_map_methods(configs));
     code.push_str("\n\n");
 
@@ -484,6 +499,18 @@ fn generate_hw_config_impl(configs: &[HwConfigData]) -> String {
     code.push_str("\n\n");
 
     code.push_str(&generate_extra_chip_types(configs));
+    code.push_str("\n\n");
+
+    code.push_str(&generate_pin_neo_method(configs));
+    code.push_str("\n\n");
+
+    code.push_str(&generate_external_flash_cs_pin_method(configs));
+    code.push_str("\n\n");
+
+    code.push_str(&generate_rp_variant_method(configs));
+    code.push_str("\n\n");
+
+    code.push_str(&generate_socket_and_x_pin_methods(configs));
     code.push_str("\n\n");
 
     code.push_str("}\n");
@@ -905,8 +932,9 @@ fn generate_chip_pin_methods(configs: &[HwConfigData]) -> String {
             // On the RP2350 we have a single GPIO port, and if data lines are
             // 0-7, then address lines need to be left shifted 8 bits as
             // they'll be 8-23.
-            let shift_left_8 =
-                (config.config.mcu.family == McuFamily::Rp2350 || config.name == "fire-28-c") && config.config.mcu.pins.data[0] < 8;
+            let shift_left_8 = (config.config.mcu.family == McuFamily::Rp2350
+                || config.name == "fire-28-c")
+                && config.config.mcu.pins.data[0] < 8;
             code.push_str("            #[allow(clippy::match_single_binding)]\n");
             code.push_str(&format!(
                 "            Board::{} => match chip_type {{\n",
@@ -927,7 +955,7 @@ fn generate_chip_pin_methods(configs: &[HwConfigData]) -> String {
                 let bit_pos = if shift_left_8 && *pin >= 8 {
                     if config.name == "fire-28-c" {
                         // There are two X pins at 8/9 so we need to subtract by 10 instead.
-                        pin - 10 
+                        pin - 10
                     } else {
                         pin - 8
                     }
@@ -1101,6 +1129,39 @@ fn generate_jumper_methods(configs: &[HwConfigData]) -> String {
         code.push_str(&format!(
             "            Board::{} => {},\n",
             config.variant_name, config.config.mcu.pins.x_jumper_pull
+        ));
+    }
+
+    code.push_str("        }\n");
+    code.push_str("    }");
+
+    code
+}
+
+fn generate_jumper_header_method(configs: &[HwConfigData]) -> String {
+    let mut code = String::new();
+
+    code.push_str("    /// Get the physical jumper-header descriptor for this board\n");
+    code.push_str("    ///\n");
+    code.push_str("    /// Returns `None` for boards whose header layout has not yet been\n");
+    code.push_str(
+        "    /// characterised, in which case a consumer should fall back to a generic\n",
+    );
+    code.push_str("    /// description rather than drawing an inaccurate wireframe.\n");
+    code.push_str("    pub const fn jumper_header(&self) -> Option<JumperHeader> {\n");
+    code.push_str("        match self {\n");
+
+    for config in configs {
+        let arm = match &config.config.jumper_header {
+            Some(header) => {
+                let cols = validation::parse_jumper_header(&config.name, header);
+                format!("Some({})", validation::format_jumper_header(&cols))
+            }
+            None => "None".to_string(),
+        };
+        code.push_str(&format!(
+            "            Board::{} => {},\n",
+            config.variant_name, arm
         ));
     }
 
@@ -1508,5 +1569,163 @@ fn generate_extra_chip_types(configs: &[HwConfigData]) -> String {
     code.push_str("            _ => &[],\n");
     code.push_str("        }\n");
     code.push_str("    }");
+    code
+}
+
+fn generate_pin_neo_method(configs: &[HwConfigData]) -> String {
+    let mut code = String::new();
+    code.push_str("    /// Get NeoPixel pin (returns None if not present)\n");
+    code.push_str("    pub const fn pin_neo(&self) -> Option<u8> {\n");
+    code.push_str("        match self {\n");
+    for config in configs {
+        code.push_str(&format!(
+            "            Board::{} => {:?},\n",
+            config.variant_name, config.config.mcu.pins.neo
+        ));
+    }
+    code.push_str("        }\n");
+    code.push_str("    }");
+    code
+}
+
+fn generate_external_flash_cs_pin_method(configs: &[HwConfigData]) -> String {
+    let mut code = String::new();
+    code.push_str("    /// Get external flash CS pin (returns None if not present)\n");
+    code.push_str("    pub const fn external_flash_cs_pin(&self) -> Option<u8> {\n");
+    code.push_str("        match self {\n");
+    for config in configs {
+        let cs_pin = config
+            .config
+            .mcu
+            .external_flash
+            .as_ref()
+            .map(|ef| ef.cs_pin);
+        code.push_str(&format!(
+            "            Board::{} => {:?},\n",
+            config.variant_name, cs_pin
+        ));
+    }
+    code.push_str("        }\n");
+    code.push_str("    }");
+    code
+}
+
+fn generate_rp_variant_method(configs: &[HwConfigData]) -> String {
+    let mut code = String::new();
+    code.push_str("    /// Get RP2350 die variant (None for non-RP families)\n");
+    code.push_str("    pub const fn rp_variant(&self) -> Option<RpVariant> {\n");
+    code.push_str("        match self {\n");
+    for config in configs {
+        let variant = match config.config.mcu.family {
+            McuFamily::Rp2350 => "Some(RpVariant::Rp235xA)",
+            McuFamily::Rp2350B => "Some(RpVariant::Rp235xB)",
+            McuFamily::Stm32f4 => "None",
+        };
+        code.push_str(&format!(
+            "            Board::{} => {},\n",
+            config.variant_name, variant
+        ));
+    }
+    code.push_str("        }\n");
+    code.push_str("    }");
+    code
+}
+
+fn generate_socket_and_x_pin_methods(configs: &[HwConfigData]) -> String {
+    let mut code = String::new();
+
+    code.push_str("    /// Get the mapping from ROM socket pin number to MCU GPIO(s)\n");
+    code.push_str("    ///\n");
+    code.push_str("    /// Returns an empty slice for boards that don't define this mapping.\n");
+    code.push_str("    pub const fn socket_pin_map(&self) -> &'static [(u8, &'static [u8])] {\n");
+    code.push_str("        match self {\n");
+    for config in configs {
+        let entries_str = match &config.config.mcu.pins.socket_pin_to_gpio {
+            Some(map) => {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_by_key(|(pin, _)| *pin);
+                entries
+                    .iter()
+                    .map(|(pin, gpios)| {
+                        let gpios_str = gpios
+                            .iter()
+                            .map(|g| g.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("({}, &[{}])", pin, gpios_str)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+            None => String::new(),
+        };
+        code.push_str(&format!(
+            "            Board::{} => &[{}],\n",
+            config.variant_name, entries_str
+        ));
+    }
+    code.push_str("        }\n");
+    code.push_str("    }\n\n");
+
+    code.push_str("    /// Get the mapping from X header pin number to MCU GPIO(s)\n");
+    code.push_str("    ///\n");
+    code.push_str("    /// Returns an empty slice for boards that don't define this mapping.\n");
+    code.push_str("    pub const fn x_pin_map(&self) -> &'static [(u8, &'static [u8])] {\n");
+    code.push_str("        match self {\n");
+    for config in configs {
+        let entries_str = match &config.config.mcu.pins.x_pin_to_gpio {
+            Some(map) => {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_by_key(|(pin, _)| *pin);
+                entries
+                    .iter()
+                    .map(|(pin, gpios)| {
+                        let gpios_str = gpios
+                            .iter()
+                            .map(|g| g.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("({}, &[{}])", pin, gpios_str)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+            None => String::new(),
+        };
+        code.push_str(&format!(
+            "            Board::{} => &[{}],\n",
+            config.variant_name, entries_str
+        ));
+    }
+    code.push_str("        }\n");
+    code.push_str("    }\n\n");
+
+    code.push_str("    /// Get the ROM socket pins that are non-signal (GND/VCC)\n");
+    code.push_str("    ///\n");
+    code.push_str("    /// Returns an empty slice for boards that don't define this.\n");
+    code.push_str("    pub const fn non_signal_pins(&self) -> &'static [u8] {\n");
+    code.push_str("        match self {\n");
+    for config in configs {
+        let pins_str = config
+            .config
+            .chip
+            .pins
+            .non_signal
+            .as_ref()
+            .map(|v| {
+                v.iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        code.push_str(&format!(
+            "            Board::{} => &[{}],\n",
+            config.variant_name, pins_str
+        ));
+    }
+    code.push_str("        }\n");
+    code.push_str("    }");
+
     code
 }

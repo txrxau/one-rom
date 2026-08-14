@@ -1,6 +1,4 @@
-//! One ROM Lab - ROM handling
-
-// Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
+// Copyright (c) 2026 Piers Finlayson <piers@piers.rocks>
 //
 // MIT licence
 
@@ -8,386 +6,439 @@
 use log::{debug, error, info, trace, warn};
 
 use alloc::vec::Vec;
-#[cfg(feature = "rp2350")]
+use core::num::Wrapping;
 use embassy_rp::gpio::{Flex, Pull};
-#[cfg(not(feature = "rp2350"))]
-use embassy_stm32::gpio::{Flex, Pull, Speed};
-use embassy_time::{Duration, Instant, Timer};
+use onerom_config::chip::{ChipType, ControlLineType};
+use onerom_config::hw::Board;
+use sha1::{Digest, Sha1};
 
-use onerom_database::{CsActive, RomEntry, RomType, checksum, identify_rom, sha1_digest};
+use crate::hw::steal_gpio;
 
-use crate::logs::{log_bad_rom_match, log_good_rom_match, log_rom_id};
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
 
-/// Identification information for a particular ROM type.  Includes:
-/// - The type of the ROM used to construct the ROM image (in particular, using
-///   the ROM type's size and chip select behaviour).
-/// - The wrapping 32-bit checksum of the ROM image.
-/// - The SHA1 digest of the ROM image.
-/// - A flag indicating whether the ROM image is all zeros.
-/// - A flag indicating whether the ROM image is all ones (0xFF).
-#[derive(Debug)]
-pub struct Id {
-    rom_type: RomType,
-    sum: u32,
-    sha1: [u8; 20],
-    all_zeros: bool,
-    all_ones: bool,
+/// SHA-1 digest, wrapping 32-bit checksum, and tristate failure count for
+/// one bit-mode read pass.
+pub struct ModeResult {
+    pub mode: u8,
+    pub sha1: [u8; 20],
+    pub checksum: u32,
+    pub failures: u32,
 }
 
-impl Default for Id {
-    fn default() -> Self {
+pub type ReadResult = Vec<ModeResult>;
+
+/// Active level for a configurable CS line on a mask ROM.
+///
+/// `true`  = active-high (drive the pin high to assert)
+/// `false` = active-low  (drive the pin low  to assert)
+///
+/// Set via `CS1`, `CS2`, `CS3` environment variables at build time.
+/// Required for any chip whose corresponding CS line is
+/// [`ControlLineType::Configurable`].
+#[derive(Copy, Clone, Default)]
+pub struct CsPolarities {
+    pub cs1: Option<bool>,
+    pub cs2: Option<bool>,
+    pub cs3: Option<bool>,
+}
+
+impl CsPolarities {
+    #[allow(unused)]
+    pub const fn none() -> Self {
         Self {
-            rom_type: RomType::Type2364 { cs: CsActive::Low },
-            sum: 0,
-            sha1: [0u8; 20],
-            all_zeros: false,
-            all_ones: false,
+            cs1: None,
+            cs2: None,
+            cs3: None,
         }
     }
 }
 
-impl Id {
-    pub fn rom_type(&self) -> RomType {
-        self.rom_type
-    }
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
 
-    pub fn sum(&self) -> u32 {
-        self.sum
-    }
+/// Look up the MCU GPIO wired to physical socket pin `physical_pin` (1-based)
+/// on `board`.
+///
+/// [`Board::socket_pin_map`] can list more than one GPIO for a pin on boards
+/// that route a socket pin to two GPIOs for the serving PIO (Fire32/40).
+/// Those GPIOs share a net, so for a reader driving or sampling the pin any
+/// one of them is correct; we take the first.
+///
+/// Returns `None` for non-signal pins (VCC, GND) and any pin absent from the
+/// board's map.
+fn gpio_for_socket_pin(board: Board, physical_pin: u8) -> Option<u8> {
+    board
+        .socket_pin_map()
+        .iter()
+        .find(|&&(pin, _)| pin == physical_pin)
+        .and_then(|&(_, gpios)| gpios.first().copied())
+}
 
-    pub fn sha1(&self) -> &[u8; 20] {
-        &self.sha1
-    }
+struct ChecksumState(Wrapping<u32>);
 
-    pub fn all_ones(&self) -> bool {
-        self.all_ones
+impl ChecksumState {
+    fn new() -> Self {
+        Self(Wrapping(0))
     }
-
-    pub fn all_zeros(&self) -> bool {
-        self.all_zeros
+    #[inline]
+    fn update(&mut self, byte: u8) {
+        self.0 += Wrapping(byte as u32);
+    }
+    fn finish(self) -> u32 {
+        self.0.0
     }
 }
 
-/// Results for ROM detection.
-#[derive(Debug, Default)]
-pub struct Matches {
-    good: Vec<&'static RomEntry>,
-    bad: Vec<(&'static RomEntry, RomType)>,
-    ids: [Id; RomType::all().len()],
+/// A GPIO-backed control line with its assert polarity.
+struct ControlLine {
+    flex: Flex<'static>,
+    assert_high: bool,
 }
 
-/// Object representing the ROM.  Used to read and detect connected ROMs.
-pub struct Rom {
-    address: AddressLines,
-    data: DataLines,
-    pub buf: [u8; 1 << AddressLines::NUM_ADDR_LINES],
-    matches: Option<Matches>,
-    last_read_duration: Option<Duration>,
-}
-
-impl Rom {
-    /// Creates a new ROM object.
-    ///
-    /// Arguments:
-    /// - `addr_pins`: An array of the physical pins connected to A0-A13.  A13
-    ///   is actually the 2364 chip select pin.
-    /// - `data_pins`: An array of the physical pins connected to D0-D7.
-    pub fn new(
-        addr_pins: [Flex<'static>; AddressLines::NUM_ADDR_LINES],
-        data_pins: [Flex<'static>; DataLines::NUM_DATA_LINES],
-    ) -> Self {
+impl ControlLine {
+    fn active_low(flex: Flex<'static>) -> Self {
         Self {
-            address: AddressLines { address: addr_pins },
-            data: DataLines::new(data_pins),
-            buf: [0u8; 1 << AddressLines::NUM_ADDR_LINES],
-            matches: None,
-            last_read_duration: None,
+            flex,
+            assert_high: false,
         }
     }
 
-    /// Initializes the ROM object.  Must be called after creation, before
-    /// calling other methods.
-    pub fn init(&mut self) {
-        self.address.init();
-        self.data.init();
+    fn configurable(flex: Flex<'static>, assert_high: bool) -> Self {
+        Self { flex, assert_high }
     }
-
-    // Reads the ROM data without any delays between settings address lines
-    // and reading the data.
-    #[allow(dead_code)]
-    async fn read_fast(&mut self) {
-        let max_addr = 1 << AddressLines::NUM_ADDR_LINES;
-        assert!(self.buf.len() == max_addr);
-
-        let start = Instant::now();
-
-        // Now read the ROM
-        for ii in 0..max_addr {
-            self.address.set(ii);
-            self.buf[ii] = self.data.read();
-        }
-        self.address.init();
-
-        let end = Instant::now();
-        self.last_read_duration = Some(end - start);
-    }
-
-    #[allow(dead_code)]
-    async fn read_with_cs_toggle(&mut self) {
-        let max_addr = 1 << AddressLines::NUM_ADDR_LINES;
-        let start = Instant::now();
-
-        for ii in 0..max_addr {
-            // Set CS inactive (all high or whatever makes it inactive)
-            self.address.set(0x3FFFF); // All CS lines inactive
-            Timer::after_micros(1).await;
-
-            // Set to target address with CS active
-            self.address.set(ii);
-            Timer::after_micros(1).await;
-            self.buf[ii] = self.data.read();
-        }
-        self.address.init();
-
-        let end = Instant::now();
-        self.last_read_duration = Some(end - start);
-    }
-
-    // Reads the ROM data with, resetting address lines to inputs (i.e. tri-
-    // stating them) in between reads.
-    #[allow(dead_code)]
-    async fn read_slow(&mut self) {
-        let max_addr = 1 << AddressLines::NUM_ADDR_LINES;
-        assert!(self.buf.len() == max_addr);
-
-        self.address.set(0x3FFF); // Set all address lines high
-        Timer::after_micros(1).await;
-
-        let start = Instant::now();
-
-        // Now read the ROM
-        for ii in 0..max_addr {
-            self.address.set(ii);
-            Timer::after_micros(1).await;
-            self.buf[ii] = self.data.read();
-            Timer::after_micros(1).await;
-        }
-        self.address.init();
-
-        let end = Instant::now();
-        self.last_read_duration = Some(end - start);
-    }
-
-    // Identifies the read ROM image.  Must only be called after either
-    // `Self::read_fast()` or `Self::read_slow()`.
-    //
-    // The existing ROM image buffer contains a 16KB image, based on the
-    // entire address space, including all CS lines, being enumerated.  This
-    // function takes that image, and turns it into an equivalent ROM image
-    // for every supported ROM type (including each possible chip select
-    // configuration) in turn.
-    //
-    // It then attempted to match each image against the database.  Hence, it
-    // should detect any of the different ROM types, if any of them match.
-    // There may be multiple matches, for example if:
-    // - the ROM image is a larger image, containing multiple copies of a
-    //   smaller one (i.e. a 2364 image containing two 2332 images, one for
-    //   each 2332 CS2 chip select value)
-    // - the actual bytes data (and hence SHA1/checksum) was a match, but the
-    //   actually CS cofiguration required to serve it differed from that in
-    //   the database (this is a "bad" match).
-    fn id(&mut self) {
-        // Scratch buffer
-        let mut buf = [0u8; RomType::max_size()];
-
-        let mut matches = Matches::default();
-
-        for (ii, rom_type) in RomType::all().iter().enumerate() {
-            #[cfg(feature = "pin-24")]
-            if rom_type.rom_pins() == 28 {
-                continue;
-            }
-            #[cfg(feature = "pin-28")]
-            if rom_type.rom_pins() == 24 {
-                continue;
-            }
-
-            // Build a temporary copy of the ROM data, based on this particular
-            // ROM type and CS behaviour
-            let size = rom_type.size();
-            #[allow(clippy::needless_range_loop)]
-            for jj in 0..size {
-                let addr = jj | rom_type.cs_active_mask();
-                buf[jj] = self.buf[addr];
-            }
-
-            // Now use this copy to get the checksum/SHA1 digest
-            let sum: u32 = checksum(&buf[0..size]);
-            let sha1 = sha1_digest(&buf[0..size]);
-            let (mut good, mut bad) = identify_rom(rom_type, sum, sha1);
-            info!(
-                "sum and sha1 for {}: {:#010X}, {}",
-                rom_type.type_str(),
-                sum,
-                hex::encode(sha1)
-            );
-
-            matches.good.append(&mut good);
-            matches.bad.append(&mut bad);
-            matches.ids[ii] = Id {
-                rom_type: *rom_type,
-                sum,
-                sha1,
-                all_zeros: buf[0..size].iter().all(|&b| b == 0),
-                all_ones: buf[0..size].iter().all(|&b| b == 0xFF),
-            };
-        }
-
-        self.matches = Some(matches);
-    }
-
-    /// Reads any connected ROM and detects any matches.
-    ///
-    /// Use `Self::good_matches()`, `Self::bad_matches()` and `Self::ids()` for
-    /// the results.  `Self::last_read_duration()` provides the time taken to
-    /// do the read of the ROM.
-    pub async fn detect(&mut self) {
-        #[cfg(feature = "pin-24")]
-        self.read_fast().await;
-        #[cfg(feature = "pin-28")]
-        self.read_with_cs_toggle().await;
-        self.id();
-    }
-
-    /// Returns last read duration
-    pub fn last_read_duration(&self) -> Option<Duration> {
-        self.last_read_duration
-    }
-
-    /// Returns good matches
-    pub fn good_matches(&self) -> Option<&Vec<&'static RomEntry>> {
-        self.matches.as_ref().map(|m| &m.good)
-    }
-
-    /// Returns bad matches - those where SHA1 or checksum matches a database
-    /// entry, but the ROM type (probably chip select line configuration)
-    /// didn't.
-    pub fn bad_matches(&self) -> Option<&Vec<(&'static RomEntry, RomType)>> {
-        self.matches.as_ref().map(|m| &m.bad)
-    }
-
-    /// Returns the identification information of the various ROM types for
-    /// this ROM image
-    pub fn ids(&self) -> Option<&[Id; RomType::all().len()]> {
-        self.matches.as_ref().map(|m| &m.ids)
-    }
-
-    /// Reads all the data from the ROM and tries to match it.
-    ///
-    /// Returns the first RomEntry found, if multiple exist.  Does not return
-    /// any "bad" matches.
-    pub async fn read_rom(&mut self) -> Option<RomEntry> {
-        // Read any connected ROM
-        info!("-----");
-        info!("Reading ROM...");
-        self.detect().await;
-        let dur = self.last_read_duration().unwrap();
-        debug!("Read took {}us", dur.as_micros());
-
-        // Output any good matches
-        let good_matches = self.good_matches().unwrap();
-        if !good_matches.is_empty() {
-            for entry in good_matches {
-                log_good_rom_match(entry);
-            }
-        }
-
-        // Also output any bad matches
-        let bad_matches = self.bad_matches().unwrap();
-        if !bad_matches.is_empty() {
-            for (entry, rom_type) in bad_matches {
-                log_bad_rom_match(entry, rom_type);
-            }
-        }
-
-        // If we got none of either, log why
-        if good_matches.is_empty() && bad_matches.is_empty() {
-            let ids = self.ids().unwrap();
-            let mut all_zeros_count = 0;
-            let mut all_ones_count = 0;
-            for id in ids {
-                if id.all_zeros() {
-                    all_zeros_count += 1;
-                }
-                if id.all_ones() {
-                    all_ones_count += 1;
-                }
-            }
-            if all_zeros_count == ids.len() {
-                warn!("ROM data is all zeros - check ROM is connected");
-            } else if all_ones_count == ids.len() {
-                warn!("ROM data is all 0xFF - ROM may be blank or unprogrammed");
-            } else {
-                info!("No matches found in database - ROM information follows:");
-                for id in ids {
-                    if id.rom_type.rom_pins() == 28 {
-                        continue;
-                    }
-                    #[cfg(feature = "pin-28")]
-                    if id.rom_type.rom_pins() == 24 {
-                        continue;
-                    }
-                    if !id.all_zeros() && !id.all_ones() {
-                        log_rom_id(id);
-                    }
-                }
-            }
-        }
-
-        if !good_matches.is_empty() {
-            Some(good_matches[0].clone())
-        } else {
-            None
-        }
-    }
-}
-
-// Address - and CS lines - for the ROM object to use.
-struct AddressLines {
-    // Array of GPIOs corresponding to A0, A2, ... A13.
-    // A13 is the address line used for 2364's CS line.
-    address: [Flex<'static>; Self::NUM_ADDR_LINES],
-}
-
-impl AddressLines {
-    #[cfg(feature = "pin-24")]
-    const NUM_ADDR_LINES: usize = 14;
-    #[cfg(feature = "pin-28")]
-    const NUM_ADDR_LINES: usize = 18;
 
     fn init(&mut self) {
-        for pin in self.address.iter_mut() {
-            #[cfg(not(feature = "rp2350"))]
-            pin.set_as_input(Pull::None);
-            #[cfg(feature = "rp2350")]
-            {
-                pin.set_pull(Pull::None);
-                pin.set_as_input();
-            }
+        self.flex.set_as_output();
+        self.deassert();
+    }
+
+    #[inline]
+    fn assert(&mut self) {
+        if self.assert_high {
+            self.flex.set_high();
+        } else {
+            self.flex.set_low();
         }
     }
 
     #[inline]
-    fn set(&mut self, address: usize) {
-        assert!(address < (1 << Self::NUM_ADDR_LINES));
+    fn deassert(&mut self) {
+        if self.assert_high {
+            self.flex.set_low();
+        } else {
+            self.flex.set_high();
+        }
+    }
+}
 
-        // Set address pins as outputs and drive them
-        for (i, pin) in self.address.iter_mut().enumerate() {
-            #[cfg(not(feature = "rp2350"))]
-            pin.set_as_output(Speed::High);
-            #[cfg(feature = "rp2350")]
+// ---------------------------------------------------------------------------
+// RomReader
+// ---------------------------------------------------------------------------
+
+pub struct RomReader {
+    addr: Vec<Flex<'static>>,
+    data: Vec<Flex<'static>>,
+    ce: Option<ControlLine>,
+    oe: Option<ControlLine>,
+    cs1: Option<ControlLine>,
+    cs2: Option<ControlLine>,
+    cs3: Option<ControlLine>,
+    /// BYTE# pin (27C400 only).  Active-low: low = 8-bit mode, high = 16-bit.
+    byte_n: Option<Flex<'static>>,
+    chip: ChipType,
+    /// Read-delay cycles at 150 MHz for 8-bit (or sole) mode.
+    read_delay_cycles: u32,
+    /// Read-delay cycles for 16-bit mode (27C400 only).
+    read_delay_16bit_cycles: u32,
+    tristate_settle_cycles: Option<u32>,
+}
+
+impl RomReader {
+    #[inline]
+    fn remap_phys_pin(chip: ChipType, board: Board, phys: u8) -> u8 {
+        if chip.chip_pins() == 24 && board.chip_pins() == 28 {
+            // 24-pin chip in a 28-pin socket adapter position: chip pin 1 maps
+            // to board socket pin 3, so shift all logical chip pins by +2.
+            phys + 2
+        } else {
+            phys
+        }
+    }
+
+    /// Construct a `RomReader` for `chip` on `board`.
+    ///
+    /// # Panics
+    /// - If a required CS polarity env var was not set for a configurable line.
+    /// - If `board` does not contain a GPIO for a physical pin required by
+    ///   `chip` (indicates a board/chip-type mismatch).
+    pub fn new(board: Board, chip: ChipType, cs: CsPolarities, tristate: bool) -> Self {
+        // Validate CS polarities are provided for every configurable line.
+        for ctrl in chip.control_lines() {
+            if ctrl.line_type == ControlLineType::Configurable {
+                let provided = match ctrl.name {
+                    "cs1" => cs.cs1.is_some(),
+                    "cs2" => cs.cs2.is_some(),
+                    "cs3" => cs.cs3.is_some(),
+                    _ => true,
+                };
+                assert!(
+                    provided,
+                    "CS polarity for '{}' must be set via the {} env var for chip {}",
+                    ctrl.name,
+                    ctrl.name.to_uppercase(),
+                    chip.name(),
+                );
+            }
+        }
+
+        // Build address-line GPIO list (A0 … An, or A-1 … An for 27C400).
+        let addr: Vec<Flex<'static>> = chip
+            .address_pins()
+            .iter()
+            .map(|&phys| {
+                let phys = Self::remap_phys_pin(chip, board, phys);
+                let gpio = gpio_for_socket_pin(board, phys).unwrap_or_else(|| {
+                    panic!(
+                        "address pin {} not mapped for chip {} on this board",
+                        phys,
+                        chip.name()
+                    )
+                });
+                steal_gpio(gpio)
+            })
+            .collect();
+
+        // Build data-line GPIO list (D0 … Dn).
+        let data: Vec<Flex<'static>> = chip
+            .data_pins()
+            .iter()
+            .map(|&phys| {
+                let phys = Self::remap_phys_pin(chip, board, phys);
+                let gpio = gpio_for_socket_pin(board, phys).unwrap_or_else(|| {
+                    panic!(
+                        "data pin {} not mapped for chip {} on this board",
+                        phys,
+                        chip.name()
+                    )
+                });
+                steal_gpio(gpio)
+            })
+            .collect();
+
+        // Build control-line GPIOs.
+        let mut ce = None;
+        let mut oe = None;
+        let mut cs1 = None;
+        let mut cs2 = None;
+        let mut cs3 = None;
+        let mut byte_n = None;
+
+        for ctrl in chip.control_lines() {
+            let phys = Self::remap_phys_pin(chip, board, ctrl.pin);
+            let gpio = gpio_for_socket_pin(board, phys).unwrap_or_else(|| {
+                panic!(
+                    "control pin {} ('{}') not mapped for chip {} on this board",
+                    phys,
+                    ctrl.name,
+                    chip.name()
+                )
+            });
+            let flex = steal_gpio(gpio);
+
+            match ctrl.name {
+                "ce" => ce = Some(ControlLine::active_low(flex)),
+                "oe" => oe = Some(ControlLine::active_low(flex)),
+                "cs1" => {
+                    cs1 = Some(ControlLine::configurable(
+                        flex,
+                        cs.cs1.expect("cs1 polarity required"),
+                    ))
+                }
+                "cs2" => {
+                    cs2 = Some(ControlLine::configurable(
+                        flex,
+                        cs.cs2.expect("cs2 polarity required"),
+                    ))
+                }
+                "cs3" => {
+                    cs3 = Some(ControlLine::configurable(
+                        flex,
+                        cs.cs3.expect("cs3 polarity required"),
+                    ))
+                }
+                "byte" => byte_n = Some(flex),
+                _ => {}
+            }
+        }
+
+        // Empirically determined timing at 150 MHz.
+        //
+        // The longer timing belongs to every 16-bit-capable part, not to the
+        // 27C400 specifically: it is A-1 taking part in address decoding when
+        // such a chip is read in byte mode that costs the extra cycles.  The
+        // 27C200 is the same shape and was previously getting the 8-bit
+        // timing.
+        let (read_delay_cycles, read_delay_16bit_cycles, tristate_settle_cycles) =
+            if chip.supports_bit_mode(16) {
+                (12, 8, Some(200))
+            } else {
+                (8, 8, Some(100))
+            };
+
+        let tristate_settle_cycles = if tristate {
+            tristate_settle_cycles
+        } else {
+            None
+        };
+        Self {
+            addr,
+            data,
+            ce,
+            oe,
+            cs1,
+            cs2,
+            cs3,
+            byte_n,
+            chip,
+            read_delay_cycles,
+            read_delay_16bit_cycles,
+            tristate_settle_cycles,
+        }
+    }
+
+    /// Initialise all GPIO directions and drive control lines to their
+    /// deasserted states.
+    pub fn init(&mut self) {
+        for pin in self.addr.iter_mut() {
             pin.set_as_output();
-            if address & (1 << i) != 0 {
+            pin.set_low();
+        }
+        for pin in self.data.iter_mut() {
+            pin.set_pull(Pull::Down);
+            pin.set_as_input();
+        }
+        if let Some(ref mut l) = self.ce {
+            l.init();
+        }
+        if let Some(ref mut l) = self.oe {
+            l.init();
+        }
+        if let Some(ref mut l) = self.cs1 {
+            l.init();
+        }
+        if let Some(ref mut l) = self.cs2 {
+            l.init();
+        }
+        if let Some(ref mut l) = self.cs3 {
+            l.init();
+        }
+        if let Some(ref mut p) = self.byte_n {
+            p.set_as_output();
+            p.set_high(); // deasserted: default to 16-bit mode until explicitly set
+        }
+    }
+
+    /// Read the ROM in every bit mode the chip supports and return results
+    /// for each pass.  For most chips this is a single 8-bit pass; the
+    /// 27C400 produces both an 8-bit and a 16-bit pass.
+    pub fn read(&mut self) -> ReadResult {
+        let mut results = Vec::new();
+        for &mode in self.chip.bit_modes() {
+            let mut sha = Sha1::new();
+            let mut csum = ChecksumState::new();
+            let failures = self.read_mode(mode, &mut sha, &mut csum);
+            let mut sha1 = [0u8; 20];
+            sha1.copy_from_slice(&sha.finalize());
+            results.push(ModeResult {
+                mode,
+                sha1,
+                checksum: csum.finish(),
+                failures,
+            });
+        }
+        results
+    }
+
+    // --- Private methods ------------------------------------------------
+
+    /// Read the entire address space in `mode`-bit mode, feeding every byte
+    /// into `sha` and `csum` and testing tristate after each address cycle.
+    #[inline(never)]
+    fn read_mode(&mut self, mode: u8, sha: &mut Sha1, csum: &mut ChecksumState) -> u32 {
+        let (addr_count, addr_shift, data_bytes, read_delay) = match mode {
+            16 => (
+                self.chip.size_bytes() / 2,
+                1, // bit 0 (A-1) always 0 in 16-bit mode
+                2,
+                self.read_delay_16bit_cycles,
+            ),
+            _ => (self.chip.size_bytes(), 0, 1, self.read_delay_cycles),
+        };
+
+        self.begin_read(mode);
+
+        let mut failures = 0u32;
+        for addr in 0..addr_count {
+            self.set_addr(addr << addr_shift);
+            cortex_m::asm::delay(read_delay);
+
+            for b in 0..data_bytes {
+                let byte = self.read_data_byte(b);
+                sha.update([byte]);
+                csum.update(byte);
+            }
+
+            failures += self.test_tristate(data_bytes);
+        }
+
+        self.end_read();
+
+        failures
+    }
+
+    fn assert_control(&mut self) {
+        if let Some(ref mut l) = self.ce {
+            l.assert();
+        }
+        if let Some(ref mut l) = self.oe {
+            l.assert();
+        }
+        if let Some(ref mut l) = self.cs1 {
+            l.assert();
+        }
+        if let Some(ref mut l) = self.cs2 {
+            l.assert();
+        }
+        if let Some(ref mut l) = self.cs3 {
+            l.assert();
+        }
+    }
+
+    fn deassert_control(&mut self) {
+        if let Some(ref mut l) = self.ce {
+            l.deassert();
+        }
+        if let Some(ref mut l) = self.oe {
+            l.deassert();
+        }
+        if let Some(ref mut l) = self.cs1 {
+            l.deassert();
+        }
+        if let Some(ref mut l) = self.cs2 {
+            l.deassert();
+        }
+        if let Some(ref mut l) = self.cs3 {
+            l.deassert();
+        }
+    }
+
+    #[inline(always)]
+    fn set_addr(&mut self, addr: usize) {
+        for (i, pin) in self.addr.iter_mut().enumerate() {
+            if addr & (1 << i) != 0 {
                 pin.set_high();
             } else {
                 pin.set_low();
@@ -395,51 +446,139 @@ impl AddressLines {
         }
     }
 
-    #[allow(dead_code)]
-    fn clear(&mut self) {
-        self.init()
-    }
-}
-
-// Data lines for the ROM object to use.
-struct DataLines {
-    data: [Flex<'static>; Self::NUM_DATA_LINES],
-}
-
-impl DataLines {
-    const NUM_DATA_LINES: usize = 8;
-
-    fn new(data_pins: [Flex<'static>; Self::NUM_DATA_LINES]) -> Self {
-        Self { data: data_pins }
-    }
-
-    fn pins(&self) -> &[Flex<'static>] {
-        &self.data
-    }
-
-    fn pins_mut(&mut self) -> &mut [Flex<'static>] {
-        &mut self.data
-    }
-
-    fn init(&mut self) {
-        for pin in self.pins_mut() {
-            #[cfg(not(feature = "rp2350"))]
-            pin.set_as_input(Pull::Down);
-            #[cfg(feature = "rp2350")]
-            {
-                pin.set_pull(Pull::Down);
-                pin.set_as_input();
-            }
-        }
-    }
-
-    fn read(&self) -> u8 {
-        let mut value = 0u8;
-        for (i, pin) in self.pins().iter().enumerate() {
+    /// Read 8 data bits starting at `data[byte_index * 8]`.
+    #[inline(always)]
+    fn read_data_byte(&self, byte_index: usize) -> u8 {
+        let mut val = 0u8;
+        let offset = byte_index * 8;
+        for (i, pin) in self.data[offset..offset + 8].iter().enumerate() {
             if pin.is_high() {
-                value |= 1 << i;
+                val |= 1 << i;
             }
         }
-        value
+        val
+    }
+
+    /// Test that data lines go to zero when OE or CE is deasserted (EPROMs),
+    /// or CS1 when neither OE nor CE is present (mask ROMs).
+    ///
+    /// Assumes all control lines are currently asserted on entry; restores
+    /// that state on exit.  Returns the number of tristate failures (0–2).
+    fn test_tristate(&mut self, data_bytes: usize) -> u32 {
+        let settle = match self.tristate_settle_cycles {
+            Some(c) => c,
+            None => return 0, // tristate testing disabled
+        };
+        let mut failures = 0u32;
+
+        // Test OE (EPROMs with a dedicated output-enable).
+        {
+            let (data, oe) = (&self.data, &mut self.oe);
+            if let Some(line) = oe {
+                line.deassert();
+                cortex_m::asm::delay(settle);
+                if !Self::data_all_low(data, data_bytes) {
+                    failures += 1;
+                }
+                line.assert();
+            }
+        }
+
+        // Test CE.
+        {
+            let (data, ce) = (&self.data, &mut self.ce);
+            if let Some(line) = ce {
+                line.deassert();
+                cortex_m::asm::delay(settle);
+                if !Self::data_all_low(data, data_bytes) {
+                    failures += 1;
+                }
+                line.assert();
+            }
+        }
+
+        // For mask ROMs (no OE / CE), test via CS1.
+        if self.oe.is_none() && self.ce.is_none() {
+            let (data, cs1) = (&self.data, &mut self.cs1);
+            if let Some(line) = cs1 {
+                line.deassert();
+                cortex_m::asm::delay(settle);
+                if !Self::data_all_low(data, data_bytes) {
+                    failures += 1;
+                }
+                line.assert();
+            }
+        }
+
+        failures
+    }
+
+    fn data_all_low(data: &[Flex<'static>], data_bytes: usize) -> bool {
+        data[..data_bytes * 8].iter().all(|p| p.is_low())
+    }
+
+    /// Configure the BYTE# pin and assert all control lines.
+    ///
+    /// Must be called before any `read_byte_at` calls.  Pair every call to
+    /// `begin_read` with exactly one call to `end_read`.
+    pub fn begin_read(&mut self, mode: u8) {
+        if let Some(ref mut byte_n) = self.byte_n {
+            if mode == 16 {
+                byte_n.set_high();
+            } else {
+                byte_n.set_low();
+                if let Some(a1) = self.addr.first_mut() {
+                    a1.set_as_output();
+                }
+            }
+        }
+        self.assert_control();
+    }
+
+    /// Read a single byte from the ROM at the given byte address.
+    ///
+    /// In 8-bit mode `byte_addr` is the physical ROM address.
+    /// In 16-bit mode `byte_addr / 2` is the word address and
+    /// `byte_addr % 2` selects the low byte (D0–D7, index 0) or the high
+    /// byte (D8–D15, index 1) from the 16-bit data bus.
+    ///
+    /// `begin_read(mode)` must have been called before the first call to
+    /// this method in a read session.
+    pub fn read_byte_at(&mut self, byte_addr: usize, mode: u8) -> u8 {
+        let (phys_addr, byte_index, delay) = if mode == 16 {
+            // Word address with A-1 (bit 0) held low, matching addr_shift=1
+            // used in read_mode.
+            (
+                (byte_addr / 2) << 1,
+                byte_addr % 2,
+                self.read_delay_16bit_cycles,
+            )
+        } else {
+            (byte_addr, 0, self.read_delay_cycles)
+        };
+
+        self.set_addr(phys_addr);
+        cortex_m::asm::delay(delay);
+        self.read_data_byte(byte_index)
+    }
+
+    /// Deassert all control lines and return the BYTE# pin to its idle state.
+    ///
+    /// Call after all `read_byte_at` calls in a read session are complete.
+    pub fn end_read(&mut self) {
+        self.deassert_control();
+        if let Some(ref mut byte_n) = self.byte_n {
+            byte_n.set_high();
+
+            // Reset D15/A-1 shared pin to back to input with pull-down.
+            if let Some(a1) = self.addr.first_mut() {
+                a1.set_pull(Pull::Down);
+                a1.set_as_input();
+            }
+        }
+    }
+
+    pub fn tristate(&self) -> bool {
+        self.tristate_settle_cycles.is_some()
     }
 }

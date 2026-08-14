@@ -4,6 +4,9 @@
 
 //! Physical socket pin to MCU GPIO mapping.
 //!
+//! DEPRECATED.  Use new Board::socket_pin_map(), x_pin_map() and
+//! non_signal_pins() methods instead.
+//!
 //! [`BoardPinMap`] takes a [`Board`] and produces a complete, immutable map
 //! of every physical socket pin to the MCU GPIO it is wired to on that board.
 //!
@@ -164,7 +167,7 @@ fn reference_chip(chip_pins: u8) -> ChipType {
         28 => ChipType::Chip27512,
         32 => ChipType::Chip27C040,
         40 => ChipType::Chip27C400,
-        n  => panic!("no reference chip defined for {}-pin socket", n),
+        n => panic!("no reference chip defined for {}-pin socket", n),
     }
 }
 
@@ -172,13 +175,13 @@ fn reference_chip(chip_pins: u8) -> ChipType {
 /// per-signal accessor.  Returns 255 if the signal name is not recognised.
 fn board_gpio_for_control(board: Board, chip: ChipType, name: &str) -> u8 {
     match name {
-        "ce"   => board.pin_ce(chip),
-        "oe"   => board.pin_oe(chip),
-        "cs1"  => board.pin_cs1(chip),
-        "cs2"  => board.pin_cs2(chip),
-        "cs3"  => board.pin_cs3(chip),
+        "ce" => board.pin_ce(chip),
+        "oe" => board.pin_oe(chip),
+        "cs1" => board.pin_cs1(chip),
+        "cs2" => board.pin_cs2(chip),
+        "cs3" => board.pin_cs3(chip),
         "byte" => board.pin_byte(),
-        _      => 255,
+        _ => 255,
     }
 }
 

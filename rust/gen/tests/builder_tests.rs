@@ -1,8 +1,4 @@
-// Copyright (C) 2025 Piers Finlayson <piers@piers.rocks>
-//
-// MIT License
-
-// Copyright (C) 2025 Piers Finlayson <piers@piers.rocks>
+// Copyright (C) 2026 Piers Finlayson <piers@piers.rocks>
 //
 // MIT License
 
@@ -157,8 +153,8 @@ mod tests {
     use onerom_config::fw::{FirmwareProperties, FirmwareVersion, ServeAlg};
     use onerom_config::hw::Board;
     use onerom_config::mcu::{Family as McuFamily, Variant as McuVariant};
-    use onerom_gen::builder::{Builder, FileData};
     use onerom_gen::image::CsLogic;
+    use onerom_gen::{Builder, FileData};
 
     const FW_VER: FirmwareVersion = FirmwareVersion::new(0, 6, 0, 0);
     const MCU_FAM: McuFamily = McuFamily::Stm32f4;
@@ -233,7 +229,7 @@ mod tests {
             assert_eq!(
                 &self.magic, HEADER_MAGIC,
                 "Magic bytes mismatch. Expected {:?}, got {:?}",
-                HEADER_MAGIC, &self.magic
+                HEADER_MAGIC, self.magic
             );
 
             assert_eq!(
@@ -480,10 +476,7 @@ mod tests {
 
         // Add the file
         builder
-            .add_file(FileData {
-                id: 0,
-                data: rom_data,
-            })
+            .add_file(FileData::new(0, rom_data))
             .expect("Failed to add file");
 
         // Build the metadata and ROM images
@@ -541,10 +534,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
         let rom_data = create_test_rom_data(8192, 0xAA);
         builder
-            .add_file(FileData {
-                id: 0,
-                data: rom_data,
-            })
+            .add_file(FileData::new(0, rom_data))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -653,10 +643,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
         let rom_data = create_test_rom_data(8192, 0xAA);
         builder
-            .add_file(FileData {
-                id: 0,
-                data: rom_data,
-            })
+            .add_file(FileData::new(0, rom_data))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -777,17 +764,15 @@ mod tests {
 
         // Add ROM data for both sets
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA), // 2364 = 8KB
-            })
+            .add_file(
+                FileData::new(0, create_test_rom_data(8192, 0xAA)), /* 2364 = 8KB */
+            )
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(4096, 0x55), // 2332 = 4KB
-            })
+            .add_file(
+                FileData::new(1, create_test_rom_data(4096, 0x55)), /* 2332 = 4KB */
+            )
             .expect("Failed to add file 1");
 
         let props = default_fw_props();
@@ -946,24 +931,21 @@ mod tests {
 
         // Add ROM data for all three sets
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA), // 2364 = 8KB
-            })
+            .add_file(
+                FileData::new(0, create_test_rom_data(8192, 0xAA)), /* 2364 = 8KB */
+            )
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(4096, 0x55), // 2332 = 4KB
-            })
+            .add_file(
+                FileData::new(1, create_test_rom_data(4096, 0x55)), /* 2332 = 4KB */
+            )
             .expect("Failed to add file 1");
 
         builder
-            .add_file(FileData {
-                id: 2,
-                data: create_test_rom_data(2048, 0xFF), // 2316 = 2KB
-            })
+            .add_file(
+                FileData::new(2, create_test_rom_data(2048, 0xFF)), /* 2316 = 2KB */
+            )
             .expect("Failed to add file 2");
 
         let props = default_fw_props();
@@ -1089,10 +1071,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
         let rom_data = create_test_rom_data(8192, 0xAA);
         builder
-            .add_file(FileData {
-                id: 0,
-                data: rom_data,
-            })
+            .add_file(FileData::new(0, rom_data))
             .expect("Failed to add file");
 
         let props = fw_props_with_logging();
@@ -1188,10 +1167,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
         let rom_data = create_test_rom_data(8192, 0xAA);
         builder
-            .add_file(FileData {
-                id: 0,
-                data: rom_data,
-            })
+            .add_file(FileData::new(0, rom_data))
             .expect("Failed to add file");
 
         let props = fw_props_with_logging();
@@ -1291,17 +1267,11 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(4096, 0x55),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(4096, 0x55)))
             .expect("Failed to add file 1");
 
         let props = fw_props_with_logging();
@@ -1415,10 +1385,9 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(4096, 0xAA), // 2332 = 4KB
-            })
+            .add_file(
+                FileData::new(0, create_test_rom_data(4096, 0xAA)), /* 2332 = 4KB */
+            )
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1498,10 +1467,9 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(2048, 0xAA), // 2316 = 2KB
-            })
+            .add_file(
+                FileData::new(0, create_test_rom_data(2048, 0xAA)), /* 2316 = 2KB */
+            )
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1584,10 +1552,7 @@ mod tests {
 
         // Create exactly 8KB for 2364
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1633,7 +1598,7 @@ mod tests {
         data.extend_from_slice(&[0x33u8; 4096]);
 
         builder
-            .add_file(FileData { id: 0, data })
+            .add_file(FileData::new(0, data))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1684,7 +1649,7 @@ mod tests {
         data.extend_from_slice(&[0x33u8; 5120]);
 
         builder
-            .add_file(FileData { id: 0, data })
+            .add_file(FileData::new(0, data))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1732,7 +1697,7 @@ mod tests {
         data.extend_from_slice(&[0x33u8; 8192]);
 
         builder
-            .add_file(FileData { id: 0, data })
+            .add_file(FileData::new(0, data))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1754,6 +1719,359 @@ mod tests {
 
         println!("✓ Phase 5 Test: Location slice with pad passed");
         println!("  - Extracted 6KB from offset 2048, padded to 8KB ROM");
+    }
+
+    // ========================================================================
+    // Image transforms
+    //
+    // These exercise `transform` through the whole build.  They live in the v1
+    // tests because `build_chip_sets` — where transforms are applied — is
+    // shared between the v1 and v2 paths, and only the v1 ROM layout can be
+    // read back byte by byte (`read_rom_byte`), which is what makes the
+    // assertions meaningful.
+    // ========================================================================
+
+    /// Source image of `groups` repetitions of `[0xA0, 0xA1, 0xB0, 0xB1]` —
+    /// two 16-bit words per 32-bit group, every byte distinguishable.
+    fn interleaved_32bit(groups: usize) -> Vec<u8> {
+        [0xA0u8, 0xA1, 0xB0, 0xB1]
+            .iter()
+            .cycle()
+            .take(groups * 4)
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn transform_deinterleave_then_swap_bytes() {
+        let json = r#"{
+            "version": 1,
+            "description": "Deinterleave a 32-bit image then swap byte pairs",
+            "chip_sets": [{
+                "type": "single",
+                "chips": [{
+                    "file": "rom32.bin",
+                    "type": "2364",
+                    "cs1": "active_low",
+                    "transform": [
+                        { "deinterleave": { "offset": 1, "stride": 2, "bytes": 2 } },
+                        "swap_bytes"
+                    ]
+                }]
+            }]
+        }"#;
+
+        let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
+
+        // 16KB of 32-bit groups -> 8KB after deinterleave, exactly a 2364.
+        builder
+            .add_file(FileData::new(0, interleaved_32bit(4096)))
+            .expect("Failed to add file");
+
+        let props = default_fw_props();
+        let (_metadata_buf, rom_images_buf) = builder.build(props).expect("Build should succeed");
+
+        // deinterleave keeps [0xB0, 0xB1] from each group; swap_bytes then
+        // reverses that pair, so the served image alternates 0xB1, 0xB0.
+        for addr in 0..8192 {
+            let expected = if addr % 2 == 0 { 0xB1 } else { 0xB0 };
+            let b = read_rom_byte(&rom_images_buf, addr, props.board());
+            assert_eq!(b, expected, "Mismatch at address {addr:#X}");
+        }
+    }
+
+    #[test]
+    fn transform_runs_after_the_location_slice() {
+        // The location window is expressed against the file as supplied.  If
+        // transforms ran first the window would be measured against a
+        // rearranged (and here, half-length) image, and the build would fail
+        // rather than quietly producing different bytes.
+        let json = r#"{
+            "version": 1,
+            "description": "Location slice then transform",
+            "chip_sets": [{
+                "type": "single",
+                "chips": [{
+                    "file": "big.bin",
+                    "type": "2364",
+                    "cs1": "active_low",
+                    "location": { "start": 8192, "length": 16384 },
+                    "transform": [
+                        { "deinterleave": { "offset": 1, "stride": 2, "bytes": 2 } },
+                        "swap_bytes"
+                    ]
+                }]
+            }]
+        }"#;
+
+        let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
+
+        // 8KB of filler, then the 16KB the location selects.
+        let mut data = vec![0xFFu8; 8192];
+        data.extend_from_slice(&interleaved_32bit(4096));
+        builder
+            .add_file(FileData::new(0, data))
+            .expect("Failed to add file");
+
+        let props = default_fw_props();
+        let (_metadata_buf, rom_images_buf) = builder.build(props).expect("Build should succeed");
+
+        // Same result as the un-windowed case: the filler is not selected.
+        for addr in 0..8192 {
+            let expected = if addr % 2 == 0 { 0xB1 } else { 0xB0 };
+            let b = read_rom_byte(&rom_images_buf, addr, props.board());
+            assert_eq!(b, expected, "Mismatch at address {addr:#X}");
+        }
+    }
+
+    #[test]
+    fn transform_runs_before_size_handling() {
+        // duplicate fills the ROM from the *transformed* image.  Were the
+        // order reversed, duplication would produce a full-size image that the
+        // deinterleave would then halve, and the build would fail.
+        let json = r#"{
+            "version": 1,
+            "description": "Transform then duplicate",
+            "chip_sets": [{
+                "type": "single",
+                "chips": [{
+                    "file": "rom32.bin",
+                    "type": "2364",
+                    "cs1": "active_low",
+                    "size_handling": "duplicate",
+                    "transform": [
+                        { "deinterleave": { "offset": 0, "stride": 2, "bytes": 2 } }
+                    ]
+                }]
+            }]
+        }"#;
+
+        let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
+
+        // 4KB -> 2KB after deinterleave, duplicated 4x to fill the 8KB ROM.
+        builder
+            .add_file(FileData::new(0, interleaved_32bit(1024)))
+            .expect("Failed to add file");
+
+        let props = default_fw_props();
+        let (_metadata_buf, rom_images_buf) = builder.build(props).expect("Build should succeed");
+
+        for addr in 0..8192 {
+            let expected = if addr % 2 == 0 { 0xA0 } else { 0xA1 };
+            let b = read_rom_byte(&rom_images_buf, addr, props.board());
+            assert_eq!(b, expected, "Mismatch at address {addr:#X}");
+        }
+    }
+
+    #[test]
+    fn transform_is_recorded_in_metadata_filename() {
+        let json = r#"{
+            "version": 1,
+            "description": "Transform provenance in metadata",
+            "chip_sets": [{
+                "type": "single",
+                "chips": [{
+                    "file": "rom32.bin",
+                    "type": "2364",
+                    "cs1": "active_low",
+                    "transform": [
+                        { "deinterleave": { "offset": 1, "stride": 2, "bytes": 2 } },
+                        "swap_bytes"
+                    ]
+                }]
+            }]
+        }"#;
+
+        let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
+        builder
+            .add_file(FileData::new(0, interleaved_32bit(4096)))
+            .expect("Failed to add file");
+
+        let props = fw_props_with_logging();
+        let (metadata_buf, _rom_images_buf) = builder.build(props).expect("Build should succeed");
+
+        // The filename recorded for the chip says how its bytes were derived,
+        // in the same notation the CLI's `transform=` key accepts.
+        let expected = "rom32.bin|transform=deinterleave:1/2/2+swap_bytes";
+        let found = String::from_utf8_lossy(&metadata_buf).contains(expected);
+        assert!(found, "metadata does not contain {expected:?}");
+    }
+
+    #[test]
+    fn transform_pad_landing_on_the_exact_chip_size_builds() {
+        // An odd-length image that `pad` rounds up to exactly the ROM size:
+        // the size handling was needed by the transform, so it must not then
+        // be reported back as an unnecessary setting.
+        let json = r#"{
+            "version": 1,
+            "description": "Odd-length swap_bytes padded to the chip size",
+            "chip_sets": [{
+                "type": "single",
+                "chips": [{
+                    "file": "odd.bin",
+                    "type": "2364",
+                    "cs1": "active_low",
+                    "size_handling": "pad",
+                    "transform": ["swap_bytes"]
+                }]
+            }]
+        }"#;
+
+        let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
+        // 8191 bytes -> padded to 8192 -> swapped -> exactly a 2364.
+        builder
+            .add_file(FileData::new(0, create_test_rom_data(8191, 0x11)))
+            .expect("Failed to add file");
+
+        let props = default_fw_props();
+        let (_metadata_buf, rom_images_buf) = builder
+            .build(props)
+            .expect("Build should succeed when pad resolves the odd byte");
+
+        // The appended blank byte becomes the low half of the final word.
+        assert_eq!(
+            read_rom_byte(&rom_images_buf, 8190, props.board()),
+            onerom_gen::PAD_BLANK_BYTE
+        );
+        assert_eq!(read_rom_byte(&rom_images_buf, 8191, props.board()), 0x11);
+    }
+
+    #[test]
+    fn transform_truncate_landing_on_the_exact_chip_size_builds() {
+        let json = r#"{
+            "version": 1,
+            "description": "Odd-length swap_bytes truncated to the chip size",
+            "chip_sets": [{
+                "type": "single",
+                "chips": [{
+                    "file": "odd.bin",
+                    "type": "2364",
+                    "cs1": "active_low",
+                    "size_handling": "truncate",
+                    "transform": ["swap_bytes"]
+                }]
+            }]
+        }"#;
+
+        let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
+        // 8193 bytes -> trailing byte dropped -> exactly a 2364.
+        builder
+            .add_file(FileData::new(0, create_test_rom_data(8193, 0x22)))
+            .expect("Failed to add file");
+
+        builder
+            .build(default_fw_props())
+            .expect("Build should succeed when truncate resolves the odd byte");
+    }
+
+    #[test]
+    fn transform_on_a_chip_without_an_image_is_still_validated() {
+        // A RAM chip has no image for the transform to act on, but an invalid
+        // transform must still be rejected rather than recorded in metadata.
+        let json = r#"{
+            "version": 1,
+            "description": "Invalid transform on a RAM chip",
+            "chip_sets": [{
+                "type": "single",
+                "chips": [{
+                    "file": "",
+                    "type": "6116",
+                                        "transform": [
+                        { "deinterleave": { "offset": 9, "stride": 1, "bytes": 0 } }
+                    ]
+                }]
+            }]
+        }"#;
+
+        // 6116 RAM needs firmware 0.6.2 or later.
+        let fw_ver = FirmwareVersion::new(0, 6, 2, 0);
+        let err = match Builder::from_json(fw_ver, MCU_FAM, json) {
+            Ok(builder) => builder
+                .build(default_fw_props())
+                .expect_err("Build should reject an invalid transform"),
+            // Rejecting at parse time is equally acceptable.
+            Err(e) => e,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("lane width must be at least 1"), "{msg}");
+    }
+
+    #[test]
+    fn ihex_pad_fills_the_tail_with_the_ihex_blank_byte() {
+        // An unprogrammed ROM cell reads as 0xFF, so an Intel HEX image pads
+        // out to the chip size with 0xFF — the same value the decoder already
+        // uses for gaps inside the image — not the 0xAA used for raw binaries.
+        let json = r#"{
+            "version": 1,
+            "description": "Intel HEX padded to the chip size",
+            "chip_sets": [{
+                "type": "single",
+                "chips": [{
+                    "file": "rom.hex",
+                    "type": "2364",
+                    "cs1": "active_low",
+                    "format": "ihex",
+                    "size_handling": "pad"
+                }]
+            }]
+        }"#;
+
+        let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
+        // Only the first 16 bytes are described; the rest is padding.
+        let hex = onerom_gen::encode_ihex(&[0x11u8; 16], 0);
+        builder
+            .add_file(FileData::new(0, hex.into_bytes()))
+            .expect("Failed to add file");
+
+        let props = default_fw_props();
+        let (_metadata_buf, rom_images_buf) = builder.build(props).expect("Build should succeed");
+
+        for addr in 0..16 {
+            assert_eq!(
+                read_rom_byte(&rom_images_buf, addr, props.board()),
+                0x11,
+                "data mismatch at {addr:#X}"
+            );
+        }
+        for addr in [16, 4096, 8191] {
+            assert_eq!(
+                read_rom_byte(&rom_images_buf, addr, props.board()),
+                onerom_gen::IHEX_BLANK_BYTE,
+                "pad mismatch at {addr:#X}"
+            );
+        }
+    }
+
+    #[test]
+    fn transform_reports_a_ragged_image() {
+        let json = r#"{
+            "version": 1,
+            "description": "Ragged deinterleave",
+            "chip_sets": [{
+                "type": "single",
+                "chips": [{
+                    "file": "rom.bin",
+                    "type": "2364",
+                    "cs1": "active_low",
+                    "size_handling": "pad",
+                    "transform": [
+                        { "deinterleave": { "offset": 0, "stride": 4 } }
+                    ]
+                }]
+            }]
+        }"#;
+
+        let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
+        // 4094 is not a multiple of the 4-byte group.
+        builder
+            .add_file(FileData::new(0, create_test_rom_data(4094, 0x5A)))
+            .expect("Failed to add file");
+
+        let err = builder
+            .build(default_fw_props())
+            .expect_err("Build should fail on a ragged image");
+        let msg = format!("{err}");
+        assert!(msg.contains("multiple of 4 bytes"), "{msg}");
     }
 
     // ========================================================================
@@ -1780,10 +2098,7 @@ mod tests {
 
         // Create 4KB file for 8KB ROM (exact divisor)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(4096, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(4096, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1824,10 +2139,7 @@ mod tests {
 
         // Create 3KB file for 8KB ROM (not an exact divisor, must pad)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(3072, 0x55),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(3072, 0x55)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1866,10 +2178,7 @@ mod tests {
 
         // Create 10KB file for 8KB ROM - too large
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(10240, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(10240, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1905,10 +2214,7 @@ mod tests {
 
         // Create 3KB file for 8KB ROM with duplicate - 3KB is not exact divisor of 8KB
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(3072, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(3072, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1947,10 +2253,7 @@ mod tests {
 
         // Create exactly 8KB file but specified pad - unnecessary
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -1998,17 +2301,11 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(8192, 0x55),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(8192, 0x55)))
             .expect("Failed to add file 1");
 
         let props = default_fw_props();
@@ -2082,17 +2379,11 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(8192, 0x55),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(8192, 0x55)))
             .expect("Failed to add file 1");
 
         let props = default_fw_props();
@@ -2164,17 +2455,11 @@ mod tests {
 
         // Add file once
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("First add should succeed");
 
         // Try to add same file again
-        let result = builder.add_file(FileData {
-            id: 0,
-            data: create_test_rom_data(8192, 0xBB),
-        });
+        let result = builder.add_file(FileData::new(0, create_test_rom_data(8192, 0xBB)));
 
         // Should fail
         assert!(result.is_err(), "Adding duplicate file should fail");
@@ -2216,10 +2501,7 @@ mod tests {
 
         // Add only first file, skip second
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Adding file 0 should succeed");
 
         // Try to build without adding file 1
@@ -2276,24 +2558,15 @@ mod tests {
 
         // Add files out of order: 2, 0, 1
         builder
-            .add_file(FileData {
-                id: 2,
-                data: create_test_rom_data(2048, 0xFF),
-            })
+            .add_file(FileData::new(2, create_test_rom_data(2048, 0xFF)))
             .expect("Adding file 2 should succeed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Adding file 0 should succeed");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(4096, 0x55),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(4096, 0x55)))
             .expect("Adding file 1 should succeed");
 
         // Build should succeed even with files added out of order
@@ -2362,10 +2635,9 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(2048, 0xAA), // 2316 = 2KB
-            })
+            .add_file(
+                FileData::new(0, create_test_rom_data(2048, 0xAA)), /* 2316 = 2KB */
+            )
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -2395,6 +2667,7 @@ mod tests {
 
         for i in 0..32 {
             if i > 0 {
+                #[allow(clippy::single_char_add_str)]
                 json.push_str(",");
             }
             json.push_str(&format!(
@@ -2422,11 +2695,11 @@ mod tests {
         // Add all 32 files
         for i in 0..32 {
             builder
-                .add_file(FileData {
-                    id: i,
-                    data: create_test_rom_data(8192, (i as u8).wrapping_mul(8)),
-                })
-                .expect(&format!("Failed to add file {}", i));
+                .add_file(FileData::new(
+                    i,
+                    create_test_rom_data(8192, (i as u8).wrapping_mul(8)),
+                ))
+                .unwrap_or_else(|_| panic!("Failed to add file {}", i));
         }
 
         let props = FirmwareProperties::new(
@@ -2460,7 +2733,7 @@ mod tests {
         let min_pin = *addr_pins.iter().min().unwrap() as usize;
         let max_pin = *addr_pins.iter().max().unwrap() as usize;
         assert!(
-            min_pin % 8 == 0,
+            min_pin.is_multiple_of(8),
             "Address pins must start on 8-byte boundary, got min pin {}",
             min_pin
         );
@@ -2506,7 +2779,7 @@ mod tests {
         let max_pin = *data_pins.iter().max().unwrap();
         assert_eq!(data_pins.len(), 8, "Must have exactly 8 data pins");
         assert!(
-            min_pin % 8 == 0,
+            min_pin.is_multiple_of(8),
             "Data pins must start on 8-byte boundary, got min pin {}",
             min_pin
         );
@@ -2559,10 +2832,7 @@ mod tests {
         }
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: test_data.clone(),
-            })
+            .add_file(FileData::new(0, test_data.clone()))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -2573,6 +2843,7 @@ mod tests {
         let mut errors = 0;
         let max_errors_to_report = 10;
 
+        #[allow(clippy::needless_range_loop)]
         for logical_addr in 0..rom_size {
             let logical_byte = test_data[logical_addr];
 
@@ -2685,10 +2956,7 @@ mod tests {
         }
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: test_data.clone(),
-            })
+            .add_file(FileData::new(0, test_data.clone()))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -2699,6 +2967,7 @@ mod tests {
         let mut errors = 0;
         let max_errors_to_report = 10;
 
+        #[allow(clippy::needless_range_loop)]
         for logical_addr in 0..rom_size {
             let expected_byte = test_data[logical_addr];
             let actual_byte = read_rom_byte(&rom_images_buf, logical_addr, board);
@@ -2781,22 +3050,13 @@ mod tests {
         let rom2_data = create_test_rom_data(rom_size, 0x33);
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: rom0_data.clone(),
-            })
+            .add_file(FileData::new(0, rom0_data.clone()))
             .expect("Failed to add file 0");
         builder
-            .add_file(FileData {
-                id: 1,
-                data: rom1_data.clone(),
-            })
+            .add_file(FileData::new(1, rom1_data.clone()))
             .expect("Failed to add file 1");
         builder
-            .add_file(FileData {
-                id: 2,
-                data: rom2_data.clone(),
-            })
+            .add_file(FileData::new(2, rom2_data.clone()))
             .expect("Failed to add file 2");
 
         let props = default_fw_props();
@@ -2922,7 +3182,7 @@ mod tests {
 
         // Create distinct test data for each ROM (each 8KB)
         let rom_size = 8192;
-        let rom_data = vec![
+        let rom_data = [
             create_test_rom_data(rom_size, 0x11),
             create_test_rom_data(rom_size, 0x22),
             create_test_rom_data(rom_size, 0x33),
@@ -2931,11 +3191,8 @@ mod tests {
 
         for (id, data) in rom_data.iter().enumerate() {
             builder
-                .add_file(FileData {
-                    id,
-                    data: data.clone(),
-                })
-                .expect(&format!("Failed to add file {}", id));
+                .add_file(FileData::new(id, data.clone()))
+                .unwrap_or_else(|_| panic!("Failed to add file {}", id));
         }
 
         let props = default_fw_props();
@@ -2977,7 +3234,7 @@ mod tests {
                 }
 
                 if bank < rom_data.len() {
-                    bank = bank % rom_data.len(); // Wrap around
+                    bank %= rom_data.len(); // Wrap around
                 }
                 rom_data[bank][rom_offset]
             };
@@ -3559,10 +3816,7 @@ mod tests {
             .expect("Filename with spaces should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = fw_props_with_logging();
@@ -3620,10 +3874,7 @@ mod tests {
             .expect("Filename with special chars should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = fw_props_with_logging();
@@ -3681,10 +3932,7 @@ mod tests {
             .expect("Filename with unicode should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = fw_props_with_logging();
@@ -3748,10 +3996,7 @@ mod tests {
             .expect("Max length filename should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = fw_props_with_logging();
@@ -3817,10 +4062,7 @@ mod tests {
         match result {
             Ok(mut builder) => {
                 builder
-                    .add_file(FileData {
-                        id: 0,
-                        data: create_test_rom_data(8192, 0xAA),
-                    })
+                    .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
                     .expect("Failed to add file");
 
                 let props = fw_props_with_logging();
@@ -3916,10 +4158,7 @@ mod tests {
 
         // Only add the file once - it's deduplicated
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file 0");
 
         let props = fw_props_with_logging();
@@ -3999,10 +4238,7 @@ mod tests {
             .expect("Filename with path should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = fw_props_with_logging();
@@ -4060,10 +4296,7 @@ mod tests {
             .expect("Filename with quotes should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = fw_props_with_logging();
@@ -4130,10 +4363,7 @@ mod tests {
             }
             Ok(mut builder) => {
                 builder
-                    .add_file(FileData {
-                        id: 0,
-                        data: create_test_rom_data(8192, 0xAA),
-                    })
+                    .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
                     .expect("Failed to add file");
 
                 let props = fw_props_with_logging();
@@ -4207,10 +4437,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         // Build with different ServeAlg in FirmwareProperties
@@ -4271,17 +4498,11 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(8192, 0x55),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(8192, 0x55)))
             .expect("Failed to add file 1");
 
         // Build with TwoCsOneAddr in FirmwareProperties
@@ -4342,17 +4563,11 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(8192, 0x55),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(8192, 0x55)))
             .expect("Failed to add file 1");
 
         // Build with TwoCsOneAddr
@@ -4423,24 +4638,15 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(8192, 0x55),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(8192, 0x55)))
             .expect("Failed to add file 1");
 
         builder
-            .add_file(FileData {
-                id: 2,
-                data: create_test_rom_data(8192, 0x33),
-            })
+            .add_file(FileData::new(2, create_test_rom_data(8192, 0x33)))
             .expect("Failed to add file 2");
 
         let props = FirmwareProperties::new(
@@ -4510,10 +4716,7 @@ mod tests {
 
         // Add zero-byte file
         builder
-            .add_file(FileData {
-                id: 0,
-                data: Vec::new(),
-            })
+            .add_file(FileData::new(0, Vec::new()))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -4550,10 +4753,7 @@ mod tests {
 
         // Add single-byte file (should be padded to 2KB)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: vec![0x42],
-            })
+            .add_file(FileData::new(0, vec![0x42]))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -4597,10 +4797,7 @@ mod tests {
 
         // Add 2047-byte file (1 byte short of 2KB)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(2047, 0xAB),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(2047, 0xAB)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -4640,10 +4837,7 @@ mod tests {
 
         // Add 2049-byte file (1 byte over 2KB, needs padding to 4KB)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(2049, 0xCD),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(2049, 0xCD)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -4684,10 +4878,7 @@ mod tests {
 
         // Add exactly 1KB file (should duplicate to 2KB)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(1024, 0xEF),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(1024, 0xEF)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -4727,10 +4918,7 @@ mod tests {
 
         // Add exactly 2KB file (should duplicate 4 times to 8KB)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(2048, 0x12),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(2048, 0x12)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -4770,10 +4958,7 @@ mod tests {
 
         // Add 1-byte file (should pad to 8KB)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: vec![0x99],
-            })
+            .add_file(FileData::new(0, vec![0x99]))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -4823,10 +5008,7 @@ mod tests {
 
         // Add 3KB file without size_handling (should error)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(3072, 0x33),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(3072, 0x33)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -4863,10 +5045,7 @@ mod tests {
 
         // Add exactly 8KB (maximum for 2364)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xFF),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xFF)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -4905,10 +5084,7 @@ mod tests {
 
         // Add exactly 2KB (minimum/exact size for 2316)
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(2048, 0x00),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(2048, 0x00)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -5296,10 +5472,7 @@ mod tests {
             Builder::from_json(FW_VER, MCU_FAM, json).expect("Valid CS config should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(2048, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(2048, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -5332,10 +5505,7 @@ mod tests {
             Builder::from_json(FW_VER, MCU_FAM, json).expect("Valid CS config should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(4096, 0xBB),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(4096, 0xBB)))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -5379,24 +5549,15 @@ mod tests {
             Builder::from_json(FW_VER, MCU_FAM, json).expect("Same CS config should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0x11),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0x11)))
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(8192, 0x22),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(8192, 0x22)))
             .expect("Failed to add file 1");
 
         builder
-            .add_file(FileData {
-                id: 2,
-                data: create_test_rom_data(8192, 0x33),
-            })
+            .add_file(FileData::new(2, create_test_rom_data(8192, 0x33)))
             .expect("Failed to add file 2");
 
         let props = default_fw_props();
@@ -5440,24 +5601,15 @@ mod tests {
             Builder::from_json(FW_VER, MCU_FAM, json).expect("Same CS config should be allowed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0x44),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0x44)))
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(8192, 0x55),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(8192, 0x55)))
             .expect("Failed to add file 1");
 
         builder
-            .add_file(FileData {
-                id: 2,
-                data: create_test_rom_data(8192, 0x66),
-            })
+            .add_file(FileData::new(2, create_test_rom_data(8192, 0x66)))
             .expect("Failed to add file 2");
 
         let props = default_fw_props();
@@ -5499,10 +5651,7 @@ mod tests {
         }
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: test_data.clone(),
-            })
+            .add_file(FileData::new(0, test_data.clone()))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -5511,6 +5660,7 @@ mod tests {
 
         // Verify first copy (addresses 0-4095)
         let mut errors_first = 0;
+        #[allow(clippy::needless_range_loop)]
         for addr in 0..4096 {
             let expected = test_data[addr];
             let actual = read_rom_byte(&rom_images_buf, addr, board);
@@ -5573,10 +5723,7 @@ mod tests {
         let test_data = create_test_rom_data(2048, 0x42);
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: test_data.clone(),
-            })
+            .add_file(FileData::new(0, test_data.clone()))
             .expect("Failed to add file");
 
         let props = default_fw_props();
@@ -5718,10 +5865,7 @@ mod tests {
             }
 
             builder
-                .add_file(FileData {
-                    id: 0,
-                    data: test_data.clone(),
-                })
+                .add_file(FileData::new(0, test_data.clone()))
                 .expect("Failed to add file");
 
             let props = FirmwareProperties::new(
@@ -5740,6 +5884,7 @@ mod tests {
             let mut errors = 0;
             let max_errors = 10;
 
+            #[allow(clippy::needless_range_loop)]
             for addr in 0..8192 {
                 let expected = test_data[addr];
                 let actual = read_rom_byte(&rom_images_buf, addr, board);
@@ -5791,10 +5936,7 @@ mod tests {
 
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAB),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAB)))
             .expect("Failed to add file");
 
         let licenses = builder.licenses();
@@ -5830,17 +5972,14 @@ mod tests {
 
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAB),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAB)))
             .expect("Failed to add file");
 
         let licenses = builder.licenses();
         assert_eq!(licenses.len(), 0, "There should be no license entry");
 
         // Should fail
-        let license = onerom_gen::builder::License::new(0, 0, "license.url".to_string());
+        let license = onerom_gen::License::new(0, 0, "license.url".to_string());
         builder
             .accept_license(&license)
             .expect_err("License acceptance should fail");
@@ -5931,9 +6070,9 @@ mod tests {
             "chip_sets": [{
                 "type": "single",
                 "chips": [{
+                    "cs1": "active_low",
                     "file": "test.rom",
-                    "type": "2364",
-                    "cs1": "active_low"
+                    "type": "2364"
                 }]
             }]
         }"#;
@@ -6162,10 +6301,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -6251,10 +6387,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -6376,10 +6509,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -6490,24 +6620,15 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file 0");
 
         builder
-            .add_file(FileData {
-                id: 1,
-                data: create_test_rom_data(4096, 0x55),
-            })
+            .add_file(FileData::new(1, create_test_rom_data(4096, 0x55)))
             .expect("Failed to add file 1");
 
         builder
-            .add_file(FileData {
-                id: 2,
-                data: create_test_rom_data(2048, 0xFF),
-            })
+            .add_file(FileData::new(2, create_test_rom_data(2048, 0xFF)))
             .expect("Failed to add file 2");
 
         let props = default_fw_props_060();
@@ -6605,10 +6726,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -6675,10 +6793,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -6739,10 +6854,7 @@ mod tests {
         .expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = FirmwareProperties::new(
@@ -6841,10 +6953,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -6933,10 +7042,7 @@ mod tests {
             Builder::from_json(FW_VER, MCU_FAM, json).expect("Parsing should succeed");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -6978,10 +7084,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -7035,10 +7138,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -7121,10 +7221,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -7222,10 +7319,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -7328,10 +7422,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, &json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -7400,10 +7491,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, &json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -7471,10 +7559,7 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         builder
-            .add_file(FileData {
-                id: 0,
-                data: create_test_rom_data(8192, 0xAA),
-            })
+            .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
             .expect("Failed to add file");
 
         let props = default_fw_props_060();
@@ -7544,10 +7629,7 @@ mod tests {
                 Builder::from_json(FW_VER, MCU_FAM, &json).expect("Failed to parse JSON");
 
             builder
-                .add_file(FileData {
-                    id: 0,
-                    data: create_test_rom_data(8192, 0xAA),
-                })
+                .add_file(FileData::new(0, create_test_rom_data(8192, 0xAA)))
                 .expect("Failed to add file");
 
             let props = default_fw_props_060();
@@ -7657,13 +7739,13 @@ mod tests {
         let mut builder = Builder::from_json(FW_VER, MCU_FAM, json).expect("Failed to parse JSON");
 
         let rom_sizes = [8192, 4096, 2048, 8192];
-        for i in 0..4 {
+        for (i, _) in rom_sizes.iter().enumerate() {
             builder
-                .add_file(FileData {
-                    id: i,
-                    data: create_test_rom_data(rom_sizes[i], (0xAA - i * 0x20) as u8),
-                })
-                .expect(&format!("Failed to add file {}", i));
+                .add_file(FileData::new(
+                    i,
+                    create_test_rom_data(rom_sizes[i], (0xAA - i * 0x20) as u8),
+                ))
+                .unwrap_or_else(|_| panic!("Failed to add file {}", i));
         }
 
         let props = default_fw_props_060();

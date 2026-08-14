@@ -41,20 +41,22 @@ use crate::utils::parse_u16_hex_only;
 use onerom_cli::{Error, Options};
 
 use control::{
-    ControlArgs, ControlCommands, ControlEraseArgs, ControlGpioArgs, ControlLedArgs,
-    ControlLedBeaconArgs, ControlLedCommands, ControlLedFlameArgs, ControlLedOffArgs,
-    ControlLedOnArgs, ControlPokeArgs, ControlPokeCommands, ControlPokeLiveArgs,
-    ControlPokeMemoryArgs, ControlRebootArgs, ControlResetArgs, ControlSelectArgs,
+    ControlArgs, ControlCommands, ControlEraseArgs, ControlLedArgs, ControlLedBeaconArgs,
+    ControlLedCommands, ControlLedFlameArgs, ControlLedOffArgs, ControlLedOnArgs, ControlPinArgs,
+    ControlPokeArgs, ControlPokeCommands, ControlPokeLiveArgs, ControlPokeMemoryArgs,
+    ControlRebootArgs, ControlResetArgs, ControlSelectArgs,
 };
 use firmware::{
     FirmwareArgs, FirmwareBuildArgs, FirmwareChipsArgs, FirmwareCommands, FirmwareDownloadArgs,
     FirmwareInspectArgs, FirmwareReleasesArgs,
 };
-use image::{ImageArgs, ImageCommands, ImageSwapBytesArgs};
+use image::{
+    ImageArgs, ImageCommands, ImageConvertArgs, ImageDeinterleaveArgs, ImageSwapBytesArgs,
+};
 use inspect::{
-    InspectArgs, InspectCommands, InspectGpioArgs, InspectImageArgs, InspectInfoArgs,
-    InspectPeekArgs, InspectPeekCommands, InspectPeekLiveArgs, InspectPeekMemoryArgs,
-    InspectSlotsArgs, InspectTelemetryArgs,
+    InspectArgs, InspectCommands, InspectGpioArgs, InspectHeaderArgs, InspectImageArgs,
+    InspectInfoArgs, InspectPeekArgs, InspectPeekCommands, InspectPeekLiveArgs,
+    InspectPeekMemoryArgs, InspectSlotsArgs, InspectSocketArgs, InspectTelemetryArgs,
 };
 use plugin::PluginArgs;
 use program::ProgramArgs;
@@ -111,7 +113,7 @@ pub struct Cli {
     /// Use in conjunction with --unrecognised to manage One ROMs that do not
     /// have a known One ROM firmware signature, such as unprogrammed or
     /// bricked One ROMs.
-    #[arg(global = true, long, short='i', visible_alias="id", value_name = "VID:PID", value_parser = parse_vid_pid, action = clap::ArgAction::Append)]
+    #[arg(global = true, long, visible_alias="id", value_name = "VID:PID", value_parser = parse_vid_pid, action = clap::ArgAction::Append)]
     pub vid_pid: Vec<(u16, u16)>,
 
     /// Allow management of unrecognised and unprogrammed One ROMs.
@@ -263,9 +265,104 @@ impl Cli {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct BoardArgs {}
+pub struct BoardArgs {
+    #[command(subcommand)]
+    pub command: BoardCommands,
+}
 
 impl CommandTrait for BoardArgs {
+    fn requires_device(&self) -> bool {
+        // Every form works offline given a board name, and the header/socket
+        // views only *infer* the board from a connected device when no name is
+        // supplied - they never require one. So a device is never mandatory.
+        false
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BoardCommands {
+    /// List the supported One ROM board types.
+    ///
+    /// Example:
+    ///
+    ///   onerom board list
+    List(BoardListArgs),
+
+    /// Draw a board's pin (jumper / programming) header as ASCII.
+    ///
+    /// Shows the 2xN header along the board's top edge, pad by pad, with the
+    /// MCU GPIO behind each image-select and X pad and — on RP2350 (Fire)
+    /// boards — whether that GPIO is 5V-tolerant or 3.3V-only (an ADC pin).
+    ///
+    /// The board is taken from --board, or inferred from a connected One ROM
+    /// when omitted.
+    ///
+    /// Examples:
+    ///
+    ///   onerom board header --board fire-24-f
+    ///
+    ///   onerom board header
+    Header(BoardHeaderArgs),
+
+    /// Draw a board's ROM socket pinout as ASCII.
+    ///
+    /// Without --chip-type each socket pin is labelled with the GPIO(s) behind it.
+    /// With --chip-type <chip> the pins are labelled with that ROM's functions
+    /// (address / data / chip-select / …); add --gpio to overlay both.
+    ///
+    /// The board is taken from --board, or inferred from a connected One ROM
+    /// when omitted.
+    ///
+    /// Examples:
+    ///
+    ///   onerom board socket --board fire-24-f
+    ///
+    ///   onerom board socket --board fire-24-f --chip-type 2364
+    ///
+    ///   onerom board socket --board fire-24-f --chip-type 2364 --gpio
+    Socket(BoardSocketArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct BoardListArgs {}
+
+impl CommandTrait for BoardListArgs {
+    fn requires_device(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct BoardHeaderArgs {
+    /// Board type to show (e.g. fire-24-f). Inferred from a connected One ROM
+    /// if omitted.
+    #[arg(long, short, value_name = "BOARD")]
+    pub board: Option<String>,
+}
+
+impl CommandTrait for BoardHeaderArgs {
+    fn requires_device(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct BoardSocketArgs {
+    /// Board type to show (e.g. fire-24-f). Inferred from a connected One ROM
+    /// if omitted.
+    #[arg(long, short, value_name = "BOARD")]
+    pub board: Option<String>,
+
+    /// Show ROM pin functions for this chip type (e.g. 2364) instead of GPIOs.
+    #[arg(long, short = 'c', value_name = "CHIP")]
+    pub chip_type: Option<String>,
+
+    /// Overlay the GPIO(s) behind each pin onto the --chip-type function view.
+    #[arg(long, requires = "chip_type")]
+    pub gpio: bool,
+}
+
+impl CommandTrait for BoardSocketArgs {
     fn requires_device(&self) -> bool {
         false
     }
@@ -297,8 +394,8 @@ pub enum Commands {
     /// With explicit ROM arguments instead of a config file:
     ///
     ///   onerom program --board fire-24-e \
-    ///       --slot file=kernal.bin,type=2364,cs=active_low \
-    ///       --slot file=basic.bin,type=2364,cs=active_low
+    ///       --slot file=kernal.bin,type=2364,cs1=active_low \
+    ///       --slot file=basic.bin,type=2364,cs1=active_low
     ///
     /// Using a local, pre-built firmware binary, containing the ROM metadata and
     /// images:
@@ -309,8 +406,8 @@ pub enum Commands {
     /// and specifying the ROMs via arguments:
     ///
     ///   onerom program --firmware minimal.bin \
-    ///       --slot file=kernal.bin,type=2364,cs=active_low \
-    ///       --slot file=basic.bin,type=2364,cs=active_low
+    ///       --slot file=kernal.bin,type=2364,cs1=active_low \
+    ///       --slot file=basic.bin,type=2364,cs1=active_low
     ///
     /// To save the firmware to file, **as well** as programming the One ROM, use
     /// --out.
@@ -424,22 +521,33 @@ pub enum Commands {
 
     /// List supported chip types.
     ///
-    /// Displays the chip types supported by a specific board, or all chip types
-    /// grouped by pin count.
+    /// For a board, displays each chip type it can emulate with the flash each
+    /// one uses, or with --all, every chip type grouped by pin count.
     ///
     /// Examples:
     ///
     ///   onerom chips --board fire-24-e
     ///
+    ///   onerom chips --board fire-24-e --chip-type 2364
+    ///
     ///   onerom chips --all
     Chips(FirmwareChipsArgs),
 
-    /// List supported One ROM board types.
-    /// 
-    /// Displays a list of the supported One ROM board types.
-    /// 
+    /// List supported One ROM board types, or view a board's pin layouts.
+    ///
+    /// `list` names the supported One ROM board types. `header` and `socket`
+    /// draw a board's pin (jumper) header and ROM socket pinout as ASCII.
+    ///
     /// Examples:
-    /// 
-    ///   onerom boards
-    Boards(BoardArgs)
+    ///
+    ///   onerom board list
+    ///
+    ///   onerom board header --board fire-24-f
+    ///
+    ///   onerom board socket --board fire-24-f --chip-type 2364
+    #[command(
+        subcommand_value_name = "COMMAND",
+        subcommand_help_heading = "Commands"
+    )]
+    Board(BoardArgs),
 }

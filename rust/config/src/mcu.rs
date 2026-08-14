@@ -2,6 +2,13 @@
 //
 // MIT License
 
+pub const STM32F4_BASE_FLASH: u32 = 0x0800_0000;
+pub const RP235X_BASE_FLASH: u32 = 0x1000_0000;
+pub const RP235X_END_FLASH: u32 = 0x1FFF_FFFF;
+pub const RP235X_SRAM_SIZE_KB: usize = 520;
+pub const RP235X_BASE_SRAM: u32 = 0x2000_0000;
+pub const RP235X_END_SRAM: u32 = RP235X_BASE_SRAM + (RP235X_SRAM_SIZE_KB as u32 * 1024);
+
 /// MCU family
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Family {
@@ -16,8 +23,8 @@ pub enum Family {
 impl Family {
     pub const fn get_flash_base(&self) -> u32 {
         match self {
-            Family::Stm32f4 => 0x0800_0000,
-            Family::Rp2350 => 0x1000_0000,
+            Family::Stm32f4 => STM32F4_BASE_FLASH,
+            Family::Rp2350 => RP235X_BASE_FLASH,
         }
     }
 
@@ -68,6 +75,83 @@ impl core::fmt::Display for Port {
             Port::C => write!(f, "PORT_C"),
             Port::D => write!(f, "PORT_D"),
         }
+    }
+}
+
+// Values match C enum values in core firmware
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum RpVariant {
+    Rp235xA = 1,
+    Rp235xB = 0,
+}
+
+impl RpVariant {
+    /// Construct from the `CHIP_INFO` `package_sel` word returned by the
+    /// RP2350 `get_sys_info` API: `0` is the QFN-80 (RP235xB), `1` is the
+    /// QFN-60 (RP235xA). Returns `None` for any other value.
+    pub fn from_package_sel(sel: u32) -> Option<Self> {
+        match sel {
+            0 => Some(RpVariant::Rp235xB),
+            1 => Some(RpVariant::Rp235xA),
+            _ => None,
+        }
+    }
+}
+
+impl core::fmt::Display for RpVariant {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RpVariant::Rp235xA => write!(f, "RP235xA"),
+            RpVariant::Rp235xB => write!(f, "RP235xB"),
+        }
+    }
+}
+
+/// The over-voltage tolerance of an MCU GPIO pad.
+///
+/// One ROM drives 5V retro buses directly, without level shifters, relying on
+/// the MCU's 5V-tolerant GPIOs. A handful of RP2350 pads are the exception: the
+/// ADC-capable GPIOs are **not** 5V tolerant and must be kept at or below the
+/// 3.3V IO supply. This distinction matters on the image-select header, where
+/// some select lines can sit behind those ADC pins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum PinTolerance {
+    /// 5V-tolerant pad — safe to drive from, or expose to, a 5V retro bus.
+    FiveVolt,
+    /// 3.3V-only pad (an RP2350 ADC input); must not exceed the 3.3V IO supply.
+    ThreeVolt3,
+}
+
+impl RpVariant {
+    /// The ADC-capable GPIOs for this RP2350 package.
+    ///
+    /// These are the only RP2350 pads that are **not** 5V tolerant (see
+    /// [`PinTolerance`]); every other GPIO is 5V-tolerant:
+    ///
+    /// - [`RpVariant::Rp235xA`] (QFN-60): GPIO 26–29.
+    /// - [`RpVariant::Rp235xB`] (QFN-80): GPIO 40–47.
+    pub const fn adc_gpios(&self) -> &'static [u8] {
+        match self {
+            RpVariant::Rp235xA => &[26, 27, 28, 29],
+            RpVariant::Rp235xB => &[40, 41, 42, 43, 44, 45, 46, 47],
+        }
+    }
+
+    /// The over-voltage tolerance of a GPIO on this RP2350 package.
+    ///
+    /// The ADC pins ([`Self::adc_gpios`]) are [`PinTolerance::ThreeVolt3`];
+    /// every other GPIO is [`PinTolerance::FiveVolt`].
+    pub const fn gpio_tolerance(&self, gpio: u8) -> PinTolerance {
+        let adc = self.adc_gpios();
+        let mut i = 0;
+        while i < adc.len() {
+            if adc[i] == gpio {
+                return PinTolerance::ThreeVolt3;
+            }
+            i += 1;
+        }
+        PinTolerance::FiveVolt
     }
 }
 
@@ -255,8 +339,8 @@ impl Variant {
             Variant::F405RG => 128, // +64KB CCM RAM
             Variant::F401RB | Variant::F401RC => 64,
             Variant::F401RE => 96,
-            Variant::RP2350 => 520,
-            Variant::RP2350B => 520,
+            Variant::RP2350 => RP235X_SRAM_SIZE_KB,
+            Variant::RP2350B => RP235X_SRAM_SIZE_KB,
         }
     }
 
@@ -285,10 +369,20 @@ impl Variant {
     }
 
     pub fn ccm_ram_kb(&self) -> Option<usize> {
-        // F405 has 64KB of CCM RAM, others don't
+        // F405 has 64KB of CCM RAM, others don't.  Enumerated rather than
+        // defaulted so that adding a variant with CCM forces a decision here
+        // instead of silently reporting none.
         match self {
             Variant::F405RG => Some(64),
-            _ => None,
+            Variant::F446RC
+            | Variant::F446RE
+            | Variant::F411RC
+            | Variant::F411RE
+            | Variant::F401RE
+            | Variant::F401RB
+            | Variant::F401RC
+            | Variant::RP2350
+            | Variant::RP2350B => None,
         }
     }
 
@@ -382,6 +476,95 @@ impl Variant {
             Variant::F401RC => "STM32F401RCTx",
             Variant::RP2350 => "RP235X",
             Variant::RP2350B => "RP235X",
+        }
+    }
+}
+
+/// The RP2350's unique per-chip hardware identity.
+///
+/// This is the one device property that is invariant across the device's
+/// running/stopped state and across any USB serial-number override: the serial
+/// string a host sees changes with state and configuration, but the chip ID
+/// does not. It is therefore the reliable key for tracking a device across
+/// reboots (for example while programming it).
+///
+/// The value is the RP2350 device id, read from the picoboot `GET_INFO`
+/// `CHIP_INFO` response (`device_id_low | device_id_high << 32`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Rp235xChipId(u64);
+
+impl Rp235xChipId {
+    /// Construct from the three `CHIP_INFO` data words, in the order the
+    /// RP2350 `get_sys_info` API returns them:
+    /// `[package_sel, device_id_low, device_id_high]`. `package_sel` is the
+    /// package variant register and is not part of chip identity, so it is
+    /// ignored here.
+    pub fn from_chip_info(words: [u32; 3]) -> Self {
+        Self((words[1] as u64) | ((words[2] as u64) << 32))
+    }
+
+    /// Construct directly from the 64-bit device id.
+    pub fn from_u64(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// The raw 64-bit device id.
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    /// Parse from a 16-hex-digit USB serial string, as presented by the stock
+    /// bootloader and by a running device with no serial override. Returns
+    /// `None` if the string is not exactly 16 hex digits (e.g. it is a serial
+    /// override). Round-trips with `Display`, so a chip ID read via
+    /// `from_chip_info` and one parsed here from the same device's serial are
+    /// equal.
+    pub fn from_hex_serial(serial: &str) -> Option<Self> {
+        let s = serial.trim();
+        if s.len() != 16 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        u64::from_str_radix(s, 16).ok().map(Self)
+    }
+}
+
+impl core::fmt::Display for Rp235xChipId {
+    /// Formats as 16 uppercase hex digits, matching the chip-ID serial string
+    /// the device presents in bootloader mode and when running without an
+    /// override. Intended for display and logging only, not identity comparison.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:016X}", self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rp235xa_adc_pins_are_3v3_only() {
+        let v = RpVariant::Rp235xA;
+        assert_eq!(v.adc_gpios(), &[26, 27, 28, 29]);
+        for gpio in [26, 27, 28, 29] {
+            assert_eq!(v.gpio_tolerance(gpio), PinTolerance::ThreeVolt3);
+        }
+        // A representative selection of the surrounding GPIOs are 5V-tolerant,
+        // including the boundaries just outside the ADC range.
+        for gpio in [0, 8, 9, 24, 25, 30] {
+            assert_eq!(v.gpio_tolerance(gpio), PinTolerance::FiveVolt);
+        }
+    }
+
+    #[test]
+    fn rp235xb_adc_pins_are_3v3_only() {
+        let v = RpVariant::Rp235xB;
+        assert_eq!(v.adc_gpios(), &[40, 41, 42, 43, 44, 45, 46, 47]);
+        for gpio in 40..=47 {
+            assert_eq!(v.gpio_tolerance(gpio), PinTolerance::ThreeVolt3);
+        }
+        // The RP2350A ADC range is 5V-tolerant on the B package.
+        for gpio in [26, 27, 28, 29, 39, 48] {
+            assert_eq!(v.gpio_tolerance(gpio), PinTolerance::FiveVolt);
         }
     }
 }

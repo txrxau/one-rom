@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.1 - 2026-08-09
+
+- Support devices with overridden serials
+
+## v0.2.0 - 2026-07-20
+
+- Support firmware v0.7.x
+
+## v0.1.23 - 2026-06-05
+
+- Change USB Fire erase timeout to 20s from 10s (to match CLI).
+
 ## v0.1.22 - 2026-06-02
 
 - New 28 and 32 pin boards - fire-28-c and fire-32-b.

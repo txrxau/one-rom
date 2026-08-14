@@ -8,16 +8,61 @@ use log::debug;
 use std::io::Write;
 
 use crate::args::CommandTrait;
-use onerom_cli::{DeviceState, Error, LogLevel, Options};
+use onerom_cli::{Device, DeviceState, Error, LogLevel, Options};
 use onerom_cli::{LIVE_ROM_BASE, LIVE_ROM_MAX_OFFSET};
-use onerom_config::hw::Board;
+use onerom_config::chip::ChipType;
+use onerom_config::hw::{Board, Model};
 
+/// The board types the CLI can act on, comma-separated.
+///
+/// Fire (RP2350) only. See [`check_fire_board`] for why the Ice boards are not
+/// in here, and [`get_reference_boards`] for what does still accept them.
 pub fn get_supported_boards() -> String {
-    onerom_config::hw::BOARDS
+    join_boards(Model::Fire.boards())
+}
+
+/// The board types the CLI recognises but cannot act on, comma-separated.
+///
+/// The Ice (STM32) boards. They remain fully described by the commands that
+/// only *report* hardware - `board header`, `board socket`, `chips` and
+/// `firmware releases` - none of which needs to build an image or reach a
+/// device.
+pub fn get_reference_boards() -> String {
+    join_boards(Model::Ice.boards())
+}
+
+fn join_boards(boards: &[Board]) -> String {
+    boards
         .iter()
         .map(|b| b.to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Reject a board this CLI cannot act on.
+///
+/// The firmware paths compose images for `Variant::RP2350` and nothing else,
+/// and the device paths speak picoboot, which is the RP2350 bootloader - so an
+/// Ice (STM32) board cannot be programmed, downloaded for, or scanned. Checked
+/// up front, where the user named the board, rather than left to fail deeper
+/// down as a release the manifest does not have.
+pub fn check_fire_board(board: &Board) -> Result<(), Error> {
+    match board.model() {
+        Model::Fire => Ok(()),
+        Model::Ice => Err(Error::IceBoardUnsupported(board.name().to_string())),
+    }
+}
+
+/// [`check_fire_board`] for the commands whose board is optional.
+///
+/// A board that could not be resolved at all is a separate matter, left to the
+/// caller - it may well be survivable, whereas a board that resolved to an Ice
+/// is not.
+pub fn check_fire_board_optional(board: &Option<Board>) -> Result<(), Error> {
+    match board {
+        Some(board) => check_fire_board(board),
+        None => Ok(()),
+    }
 }
 
 pub fn init_logging(options: &Options) {
@@ -59,17 +104,41 @@ pub fn check_device_nand_board(options: &Options, board_arg: &Option<String>) ->
 }
 
 /// Checks that a device is required and present if the command needs one.
+///
+/// A command that does *not* require a device is not an error without one -
+/// there is simply nothing to check, so the run-capable test is skipped rather
+/// than applied to a device that is not there.
 pub fn check_device(
     options: &Options,
     args: &impl CommandTrait,
     must_be_run_capable: bool,
 ) -> Result<(), Error> {
-    if args.requires_device() && options.device.is_none() {
-        return Err(Error::NoDevice);
-    }
-    let device = options.device.as_ref().unwrap();
+    let Some(device) = options.device.as_ref() else {
+        return if args.requires_device() {
+            Err(Error::NoDevice)
+        } else {
+            Ok(())
+        };
+    };
     if must_be_run_capable && !device.usb_can_run {
         return Err(Error::CannotRun(device.to_string()));
+    }
+    Ok(())
+}
+
+/// Checks that a device is present and **currently running**.
+///
+/// [`check_device`] with `must_be_run_capable` tests `usb_can_run`, which asks
+/// whether the flashed firmware and system plugin *could* serve. That is true of
+/// a stopped device sitting in the RP2350 bootloader, and so is not enough for
+/// anything that talks to One ROM's own picoboot command handler: that handler
+/// lives in the USB system plugin, and while the device is stopped the boot ROM
+/// answers picoboot instead, with no One ROM commands at all.
+pub fn check_device_running(options: &Options, args: &impl CommandTrait) -> Result<(), Error> {
+    check_device(options, args, true)?;
+    let device = options.device.as_ref().unwrap();
+    if !device.is_running() {
+        return Err(Error::DeviceNotRunning(device.to_string()));
     }
     Ok(())
 }
@@ -224,14 +293,46 @@ pub fn resolve_board(
         let board = device
             .onerom
             .as_ref()
-            .and_then(|o| o.flash.as_ref())
-            .and_then(|f| f.board)
+            .and_then(|o| o.get_board())
             .ok_or(Error::NoBoardFromDevice(device.to_string()))?;
         Ok(Some(board))
     } else {
         debug!("No board argument or device available to resolve board");
         Ok(None)
     }
+}
+
+/// Resolves the target board type, where not knowing it is survivable.
+///
+/// The GPIO commands use the board to *name* things - a pin's ROM function, the
+/// pad it surfaces on, whether it is 5V-tolerant - and to resolve a `--pin` pad
+/// name. None of that is worth failing a command over when the user named a
+/// GPIO directly, so a board this build cannot infer costs a name rather than
+/// the operation, and a `--pin` pad name reports the missing board itself (see
+/// [`Pin::resolve`](onerom_cli::pin::Pin::resolve)).
+///
+/// An *explicit* `--board` is different: the user asked for a specific board, so
+/// a name this build does not know is an error rather than something to shrug
+/// off and then blame on the device.
+pub fn resolve_board_optional(
+    options: &Options,
+    board_arg: &Option<String>,
+) -> Result<Option<Board>, Error> {
+    if board_arg.is_some() {
+        resolve_board(options, board_arg)
+    } else {
+        Ok(resolve_board(options, &None).ok().flatten())
+    }
+}
+
+/// The chip type of the ROM the device is currently serving.
+///
+/// The device records a human-readable ROM type per slot rather than an enum,
+/// so this resolves that label back to a [`ChipType`]. `None` when the device is
+/// not running, has no readable metadata, or names a type this build does not
+/// know - all of which cost the caller a name, not an operation.
+pub fn active_chip_type(device: &Device) -> Option<ChipType> {
+    ChipType::try_from_str(&device.get_active_rom_type()?)
 }
 
 /// Figures out the firmware output filename to use
@@ -276,4 +377,64 @@ pub fn read_char() -> Result<KeyEvent, Error> {
     };
     terminal::disable_raw_mode().map_err(|e| Error::io("terminal", e))?;
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use onerom_config::hw::BOARDS;
+
+    /// Every board must fall into exactly one of the two lists the CLI shows -
+    /// a board in neither would be invisible to `board list`, and one in both
+    /// would be claimed as usable and unusable at once.
+    #[test]
+    fn the_two_board_lists_partition_every_board() {
+        let supported = get_supported_boards();
+        let reference = get_reference_boards();
+        for board in BOARDS {
+            let name = board.name();
+            let in_supported = supported.split(", ").any(|b| b == name);
+            let in_reference = reference.split(", ").any(|b| b == name);
+            assert!(
+                in_supported != in_reference,
+                "{name} must appear in exactly one list"
+            );
+            // And the list a board is in must agree with whether it passes the
+            // guard the device and firmware commands apply.
+            assert_eq!(
+                check_fire_board(&board).is_ok(),
+                in_supported,
+                "{name} listing disagrees with check_fire_board"
+            );
+        }
+    }
+
+    #[test]
+    fn ice_boards_are_rejected_by_the_guard() {
+        let ice = Board::try_from_str("ice-24-d").unwrap();
+        let fire = Board::try_from_str("fire-24-f").unwrap();
+        assert!(matches!(
+            check_fire_board(&ice),
+            Err(Error::IceBoardUnsupported(_))
+        ));
+        // The message names the board and what the command does support. It
+        // speaks for the command the user ran and nothing else: what another
+        // command accepts is that command's to report, and it promises nothing
+        // about later releases either way.
+        let msg = check_fire_board(&ice).unwrap_err().to_string();
+        assert!(msg.contains("ice-24-d"), "{msg}");
+        assert!(msg.contains("Fire (RP2350)"), "{msg}");
+        for forecast in ["not yet", "yet supported", "later", "never"] {
+            assert!(!msg.contains(forecast), "says '{forecast}': {msg}");
+        }
+        for other in ["board header", "board socket", "onerom chips", "releases"] {
+            assert!(!msg.contains(other), "names '{other}': {msg}");
+        }
+        assert!(check_fire_board(&fire).is_ok());
+        // Optional form: an unresolved board is the caller's business, not a
+        // failure here.
+        assert!(check_fire_board_optional(&None).is_ok());
+        assert!(check_fire_board_optional(&Some(fire)).is_ok());
+        assert!(check_fire_board_optional(&Some(ice)).is_err());
+    }
 }

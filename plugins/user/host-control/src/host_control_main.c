@@ -27,24 +27,39 @@
 #define MCU_FLASH_SIZE_KB 2048
 #define MCU_RAM_SIZE_KB 520
 #define RP2350A
-#include "enums.h"
+#include "onerom_metadata.h"
 #include "reg-rp235x.h"
 
 // ---------------------------------------------------------------------------
 // Plugin header
 // ---------------------------------------------------------------------------
 
-// Use the simpler plugin header macro.  We do _not_ support yielding, as that
-// would interfere with knock/byte detection.
+// We do _not_ support yielding, as that would interfere with knock/byte detection.
 
-ORA_DEFINE_USER_PLUGIN(
-    rbcp_main,
-    MAJOR_VERSION,
-    MINOR_VERSION,
-    PATCH_VERSION,
-    BUILD_VERSION,
-    0, 6, 9       // minimum One ROM firmware version
+// Define this plugin's attribues
+void rbcp_main(
+    ora_lookup_fn_t ora_lookup_fn,
+    ora_plugin_type_t plugin_type,
+    const ora_entry_args_t *entry_args
 );
+ORA_SECTION(".plugin_header")
+const ora_plugin_header_t ora_plugin_header = {
+    .magic    = ORA_PLUGIN_MAGIC,
+    .api_version  = ORA_PLUGIN_VERSION_1,
+    .major_version = MAJOR_VERSION,
+    .minor_version = MINOR_VERSION,
+    .patch_version = PATCH_VERSION,
+    .build_version = BUILD_VERSION,
+    .entry  = rbcp_main,
+    .plugin_type = ORA_PLUGIN_TYPE_USER,
+    .sam_usage = 255,
+    .overrides1 = 0,
+    .properties1 = 0,
+    .min_fw_major_version = 0,
+    .min_fw_minor_version = 7,
+    .min_fw_patch_version = 1,
+    .reserved = {0},
+};
 
 // ---------------------------------------------------------------------------
 // Ring buffer
@@ -63,7 +78,7 @@ _Static_assert(sizeof(RING_BUF_TYPE) * 8 == RING_DATA_SIZE, "RING_BUF_TYPE must 
 
 // Put the ring buffer in its own section, so it can be aligned at the start
 // of the data region, meaning we maximise the stack space.
-__attribute__((section(".ring_buf")))
+ORA_SECTION(".ring_buf")
 ORA_RING_BUF_DECLARE_32BIT(ring_buf, RING_ENTRIES_LOG2);
 
 #define RING_BUF_CUR_READ_INDEX()   s_read_idx
@@ -96,7 +111,7 @@ static const uint32_t s_knock_seq[KNOCK_LEN] = {
 
 #define RBCP_PROTOCOL_VERSION_MAJOR 0u
 #define RBCP_PROTOCOL_VERSION_MINOR 1u
-#define RBCP_PROTOCOL_VERSION_PATCH 0u
+#define RBCP_PROTOCOL_VERSION_PATCH 1u
 const uint8_t protocol_version[4] = {
     RBCP_PROTOCOL_VERSION_MAJOR,
     RBCP_PROTOCOL_VERSION_MINOR,
@@ -207,13 +222,18 @@ typedef struct {
 static rbcp_state_t s_state;
 static nv_state_t s_nv_state;
 
+// Number of low observed-address bits the device omits for the served ROM
+// (host signalling stride = 1 << this).  Fixed for the served ROM type, so it
+// is read once at setup rather than per command.
+static uint8_t s_unobserved_addr_bits;
+
 // ---------------------------------------------------------------------------
 // API function pointers (populated at plugin entry)
 // ---------------------------------------------------------------------------
 
 static ora_lookup_fn_t                      s_lookup;
 static ora_log_fn_t                         s_log;
-static ora_demangle_addr_fn_t               s_demangle;
+static ora_demangle_observed_addr_fn_t      s_demangle;  // observed (bus) address: command signalling lives here, not byte space
 static ora_reprogram_ram_rom_slot_fn_t      s_reprogram;
 static ora_get_ram_slot_info_fn_t           s_get_ram_slot_info;
 static ora_get_ram_slot_count_fn_t          s_get_ram_slot_count;
@@ -232,10 +252,13 @@ static ora_demangle_data_fn_t               s_demangle_data;
 // Ring buffer read helpers
 // ---------------------------------------------------------------------------
 
-// Block until the next CS-active address capture is available, then return
-// its A0-A7 as a logical byte.  Entries where CS is inactive are skipped.
-// In command-response mode, entries whose upper address bits do not match
-// the configured command page are also skipped.
+// Block until the next CS-active address capture is available, then return the
+// low 8 bits of its observed (bus) address as the command byte.  The address is
+// demangled via ORA_ID_DEMANGLE_OBSERVED_ADDR, so on a word- or LSB-omitting
+// ROM the value is the observed word/bus address (not the byte address) — which
+// is the space command signalling travels in.  Entries where CS is inactive are
+// skipped.  In command-response mode, entries whose upper observed address bits
+// do not match the configured command page are also skipped.
 //
 // WARNING: This function blocks indefinitely.  If the host resets or crashes
 // mid-command while the plugin is waiting for an argument byte, this function
@@ -245,7 +268,9 @@ static ora_demangle_data_fn_t               s_demangle_data;
 static uint8_t ring_read_byte(void) {
     for (;;) {
         if (RING_BUF_CUR_READ_INDEX() == RING_BUF_CUR_WRITE_INDEX()) {
-            // No new byte to read, yet.
+            // No new byte to read, yet.  Only the capture DMA moves the write
+            // pointer, so nothing this loop does can change the condition.
+            ORA_TEST_YIELD();
             continue;
         }
         uint32_t phys = (uint32_t)RING_BUF_GET_ENTRY(s_read_idx);
@@ -276,6 +301,33 @@ static inline uint8_t failed_val(void) {
     return (uint8_t)(~s_state.cfg.status_ok);
 }
 
+// Most RAM slots this plugin will admit to a host.
+//
+// Every RBCP command that names a slot rejects 0xAA, so that a reset started
+// mid-command stays detectable.  A slot the host can never name is a slot it
+// can never use, so slot 170 is where the host-visible range has to stop —
+// advertising more would offer a slot that no host could switch to, poke, or
+// load into.
+#define MAX_HOST_SLOTS 170u
+
+// Number of RAM slots the host is told about, and the range it may name.
+//
+// The firmware reports as many slots as the RAM holds, which with a small ROM
+// is far more than a host can address.  Everything at or above this index is
+// this plugin's own — see nv_private_staging.
+static uint8_t host_slot_count(void) {
+    uint8_t total = s_get_ram_slot_count();
+    return total > MAX_HOST_SLOTS ? (uint8_t)MAX_HOST_SLOTS : total;
+}
+
+// Whether a slot index is one the host is allowed to name.
+//
+// Rejects the plugin's own slots as firmly as an out-of-range one: a host
+// reaching into them would be writing over a staging buffer mid-transaction.
+static bool host_slot_valid(uint8_t slot) {
+    return slot < host_slot_count();
+}
+
 // Write one byte into the response header at the given header-relative offset.
 // These reset_ring arg is intended to be used when update progress->complete,
 // to ensure we collect as few new bytes as possible after the host potentially
@@ -297,7 +349,7 @@ static void hdr_write(uint8_t slot, uint32_t hdr_offset, uint8_t val, bool reset
     if (reset_ring) {
         RING_BUF_RESET_READ_INDEX();
     }
-    ((volatile uint8_t *)slot_base)[phys_addr] = phys_data;
+    ((volatile uint8_t *)ORA_SRAM_PTR(slot_base))[phys_addr] = phys_data;
 }
 
 // Read one byte from the back-channel region at the given header-relative offset.
@@ -308,7 +360,7 @@ static ora_result_t hdr_read(uint8_t slot, uint32_t hdr_offset, uint8_t *val_out
         return ORA_RESULT_INVALID_SLOT;
     }
     uint32_t phys_offset = s_map_addr_to_phys(s_state.cfg.region_offset + hdr_offset);
-    uint8_t raw = ((const uint8_t *)slot_base)[phys_offset];
+    uint8_t raw = ((const uint8_t *)ORA_SRAM_PTR(slot_base))[phys_offset];
     if (s_demangle_data(raw, val_out) != ORA_RESULT_OK) {
         s_log("RBCP: hdr_read failed: demangle error at hdr_offset %u", (unsigned)hdr_offset);
         return ORA_RESULT_ERROR;
@@ -469,19 +521,27 @@ static bool exec_enter_cmd_resp(void) {
         s_log("ENTER_CMD_RESP failed: get_ram_slot_info error");
         return false;
     }
-    if (((uint32_t)command_page << 8u) >= slot_size) {
-        s_log("ENTER_CMD_RESP discarded: command page 0x%04X out of range for slot size %u",
-              (unsigned)command_page, (unsigned)slot_size);
+    // The command page is in observed (bus) address space, which on a word- or
+    // otherwise LSB-omitting ROM is narrower than the byte-addressed slot: the
+    // observed span is slot_size >> (unobserved low address bits, cached at
+    // setup as it is fixed for the served ROM type).
+    uint32_t observed_span = slot_size >> s_unobserved_addr_bits;
+    if (((uint32_t)command_page << 8u) >= observed_span) {
+        s_log("ENTER_CMD_RESP discarded: command page 0x%04X out of range for observed span %u",
+              (unsigned)command_page, (unsigned)observed_span);
         return false;
     }
     uint32_t region_end = region_offset + (uint32_t)region_size;
-    if (region_end > slot_size) {
-        s_log("ENTER_CMD_RESP failed: back-channel region exceeds slot size");
-        return false;
-    }
 
-    // Commit region_offset early so hdr_read can use it to locate the token.
+    // Commit the fields the response header is written through, before the
+    // size check rather than after it.  An oversized region is the one
+    // ENTER_CMD_RESP error the specification requires the device to *report*
+    // — "if the requested size exceeds the available space in the RAM slot,
+    // the device returns failure" — rather than discard silently, and a
+    // failure can only be reported through a header the device can locate.
     s_state.cfg.region_offset = region_offset;
+    s_state.cfg.complete      = complete;
+    s_state.cfg.status_ok     = status_ok;
 
     // The token must start from the value already in the back-channel region.
     if (hdr_read(active_slot, HDR_TOKEN_LSB, &s_state.token_lsb) != ORA_RESULT_OK ||
@@ -489,13 +549,24 @@ static bool exec_enter_cmd_resp(void) {
         s_log("ENTER_CMD_RESP failed: could not read existing token");
         return false;
     }
+
+    if (region_end > slot_size) {
+        // Report the failure and stay in command mode.  The start address is
+        // already known to be 4-byte aligned and, where the 8-byte header fits
+        // inside the slot, there is somewhere to write it even though the
+        // region as a whole does not fit.  hdr_write bounds-checks each byte,
+        // so a start address too close to the end of the slot degrades to the
+        // silent discard that is then the only thing available.
+        s_log("ENTER_CMD_RESP failed: back-channel region exceeds slot size");
+        cmd_begin(active_slot, GRP_CONTROL, CMD_ENTER_CMD_RESP);
+        cmd_end(active_slot, false);
+        return false;
+    }
     s_log("ECR: cp=0x%04X ro=%u rsz=%u cplt=0x%02X stok=0x%02X token=0x%02X%02X",
           (unsigned)command_page, (unsigned)region_offset, (unsigned)region_size,
           complete, status_ok, s_state.token_msb, s_state.token_lsb);
 
     s_state.cfg.command_page  = command_page;
-    s_state.cfg.complete      = complete;
-    s_state.cfg.status_ok     = status_ok;
     s_state.cfg.region_end    = region_end;
     s_state.cfg.data_size     = (uint32_t)region_size - HDR_SIZE;
     s_state.active_slot       = active_slot;
@@ -612,8 +683,14 @@ static bool exec_get_flash_slot_info_all(uint8_t slot) {
         // Whole records are 32 bytes; the trailing partial record is however
         // many bytes remain in the data section.
         uint32_t bytes = (i < whole_count) ? 32u : partial_bytes;
-        if (i == whole_count) {
-            // Partial record: force null terminator at the truncation point.
+        if (i == whole_count && partial_bytes >= 2u) {
+            // Partial record: force a null terminator at the truncation point,
+            // so the truncated name is a C string like every other name in the
+            // response and a host needs no separate parsing path for it.
+            //
+            // Only where a name is present at all.  With a single byte the
+            // record is just the rom_type, and terminating would overwrite the
+            // one piece of information it carries.
             record[partial_bytes - 1] = 0x00u;
         }
         data_write(slot, data_off, record, bytes);
@@ -625,7 +702,7 @@ static bool exec_get_flash_slot_info_all(uint8_t slot) {
 
 static bool exec_get_ram_slot_info_all(uint8_t slot) {
     s_log("GET_RAM_SLOT_INFO_ALL: slot=%u", (unsigned)slot);
-    uint8_t  total    = s_get_ram_slot_count();
+    uint8_t  total    = host_slot_count();
     uint32_t rom_type = 0xFFu;
 
     // slot is s_state.active_slot — both the back-channel destination and
@@ -683,6 +760,10 @@ static bool exec_slot_peek(void) {
         s_log("SLOT_PEEK failed: target value 0xAA is reserved");
         return false;
     }
+    if (!host_slot_valid(target)) {
+        s_log("SLOT_PEEK failed: slot %u is not one the host may name", (unsigned)target);
+        return false;
+    }
 
     uint32_t addr       = (uint32_t)a0
                         | ((uint32_t)a1 << 8u)
@@ -712,11 +793,13 @@ static bool exec_slot_peek(void) {
     uint32_t remaining  = byte_count;
     uint32_t data_off   = 0u;
 
+    const uint8_t *slot = ORA_SRAM_PTR(slot_base);
+
     while (remaining > 0u) {
         uint32_t chunk = (remaining > SLOT_PEEK_BUF_SIZE) ? SLOT_PEEK_BUF_SIZE : remaining;
         for (uint32_t i = 0u; i < chunk; i++) {
             uint32_t phys_offset = s_map_addr_to_phys(addr + data_off + i);
-            uint8_t  raw         = ((const uint8_t *)slot_base)[phys_offset];
+            uint8_t  raw         = slot[phys_offset];
             if (s_demangle_data(raw, &buf[i]) != ORA_RESULT_OK) {
                 s_log("SLOT_PEEK failed: demangle error at offset %u",
                       (unsigned)(data_off + i));
@@ -748,6 +831,10 @@ static bool exec_slot_poke(void) {
         s_log("SLOT_POKE failed: target value 0xAA is reserved");
         return false;
     }
+    if (!host_slot_valid(target)) {
+        s_log("SLOT_POKE failed: slot %u is not one the host may name", (unsigned)target);
+        return false;
+    }
 
     uint32_t addr = (uint32_t)a0
                   | ((uint32_t)a1 << 8u)
@@ -760,6 +847,10 @@ static bool exec_switch_slot(void) {
 
     if (target == 0xAAu) {
         s_log("SWITCH_SLOT failed: target value 0xAA is reserved");
+        return false;
+    }
+    if (!host_slot_valid(target)) {
+        s_log("SWITCH_SLOT failed: slot %u is not one the host may name", (unsigned)target);
         return false;
     }
 
@@ -775,6 +866,10 @@ static bool exec_load_slot(void) {
 
     if ((ram_slot == 0xAAu) || (flash_slot == 0xAAu)) {
         s_log("LOAD_SLOT failed: slot value 0xAA is reserved");
+        return false;
+    }
+    if (!host_slot_valid(ram_slot)) {
+        s_log("LOAD_SLOT failed: slot %u is not one the host may name", (unsigned)ram_slot);
         return false;
     }
 
@@ -797,6 +892,10 @@ static bool exec_slot_poke_all_byte(void) {
 
     if (target == 0xAAu) {
         s_log("SLOT_POKE_ALL_BYTE failed: target value 0xAA is reserved");
+        return false;
+    }
+    if (!host_slot_valid(target)) {
+        s_log("SLOT_POKE_ALL_BYTE failed: slot %u is not one the host may name", (unsigned)target);
         return false;
     }
 
@@ -824,38 +923,52 @@ static bool exec_slot_poke_all_byte(void) {
 // NV Storage
 // ---------------------------------------------------------------------------
 
-// RP2350 bootrom lookup
-#define NV_ROM_TABLE_LOOKUP_ADDR    0x00000016u
-#define NV_ROM_TABLE_FLAG_ARM_SEC   0x0004u
-
-// RP2350 XIP QMI registers
-#define XIP_QMI_BASE        0x400d0000
-#define XIP_QMI_M0_TIMING   (*((volatile uint32_t *)(XIP_QMI_BASE + 0x0C)))
-#define XIP_QMI_M0_CLKDIV_MASK   0xFF
-#define XIP_QMI_M0_CLKDIV_SHIFT  0
-
-// RP2350 flash
-#define RP2350_FLASH_BASE   0x10000000u
+// The bootrom table, the XIP clock divisor, the base of mapped flash, the
+// extent of the erase routine and the pointer to its staged copy are all facts
+// about the device rather than about this plugin, so each goes through its own
+// named ORA macro — see "Device facts" in ora/api.h.  On a device every one of
+// them compiles to the expression that used to be written here inline.
 
 static void *nv_lookup_boot_fn(char a, char b) {
-    typedef void *(*rom_table_lookup_fn)(uint32_t code, uint32_t mask);
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Warray-bounds"
-    rom_table_lookup_fn rom_table_lookup =
-        (rom_table_lookup_fn)(uintptr_t)*(uint16_t *)(NV_ROM_TABLE_LOOKUP_ADDR);
-#pragma GCC diagnostic pop
     uint32_t code = ((uint32_t)(uint8_t)b << 8) | (uint32_t)(uint8_t)a;
-    return rom_table_lookup(code, NV_ROM_TABLE_FLAG_ARM_SEC);
+    return ORA_BOOTROM_LOOKUP(code, ORA_BOOTROM_FLAG_ARM_SEC);
 }
 
 static void nv_discard_impl(void) {
     init_nv_state();
 }
 
+static bool nv_private_staging(uint32_t *base_out, uint8_t *first_out);
+static uint32_t nv_staging_required(void);
+
+// Whether a write transaction can be staged anywhere at all.
+//
+// Two routes, and either will do: this plugin's own slots above the
+// host-visible range, or a slot the host lends us — which needs there to be
+// more than one, so that the one being served is not the one overwritten, and
+// needs that slot to be big enough.
+//
+// One function rather than the test written at each site, so that what
+// GET_NV_CAPABILITY reports and what the write commands do cannot drift apart.
+// A device that answered "writable" and then failed every transaction would be
+// worse than one that admitted it could not.
+static bool nv_writable(void) {
+    uint32_t base;
+    if (nv_private_staging(&base, NULL)) {
+        return true;
+    }
+    if (host_slot_count() <= 1u) {
+        return false;
+    }
+    uint32_t slot_size;
+    if (s_get_ram_slot_info(0u, NULL, &slot_size, NULL) != ORA_RESULT_OK) {
+        return false;
+    }
+    return slot_size >= nv_staging_required();
+}
+
 static bool exec_get_nv_capability(void) {
-    // Writable only if hardware supports it AND >1 RAM slot available
-    // (single-slot devices can never free a slot for staging)
-    bool writable = (s_get_ram_slot_count() > 1u);
+    bool writable = nv_writable();
     uint8_t resp[4] = {
         (uint8_t)(NV_STORAGE_SIZE & 0xFFu),
         (uint8_t)((NV_STORAGE_SIZE >> 8u) & 0xFFu),
@@ -889,9 +1002,66 @@ static bool exec_nv_peek(void) {
     return true;
 }
 
+// Bytes a staging area must hold: the whole of NV storage, plus the erase
+// routine copied in immediately above it.
+static uint32_t nv_staging_required(void) {
+    return NV_STORAGE_SIZE
+         + ORA_STAGED_FN_SIZE(__flash_erase_fn_start, __flash_erase_fn_end);
+}
+
+// Find a staging area among this plugin's own RAM slots, if it has any.
+//
+// The firmware reports every slot the RAM holds; the host is told about at
+// most MAX_HOST_SLOTS of them, so anything above that is ours.  Slots are
+// consecutive regions of SRAM, so a run of them is one contiguous buffer — and
+// a run is what a small ROM needs, since a slot is only as big as the ROM being
+// served and can be 2KB.
+//
+// The *highest* run, so that adding host-visible slots later — or a plugin
+// wanting a private slot of its own — takes from the bottom of the private
+// range and does not collide.
+//
+// Staging here rather than in the host's slot is strictly better for the host:
+// nothing it can name is disturbed.  Where there is no private slot at all —
+// a large ROM leaves few slots, and a 512KB one leaves a single slot — the
+// caller falls back to the slot the host lent us, which is what RBCP describes.
+static bool nv_private_staging(uint32_t *base_out, uint8_t *first_out) {
+    uint8_t total = s_get_ram_slot_count();
+    uint8_t host  = host_slot_count();
+    if (total <= host) {
+        return false;
+    }
+
+    uint32_t slot_size;
+    if (s_get_ram_slot_info(host, NULL, &slot_size, NULL) != ORA_RESULT_OK
+        || slot_size == 0u) {
+        return false;
+    }
+
+    uint32_t required     = nv_staging_required();
+    uint32_t slots_needed = (required + slot_size - 1u) / slot_size;
+    if (slots_needed > (uint32_t)(total - host)) {
+        return false;
+    }
+
+    uint8_t first = (uint8_t)((uint32_t)total - slots_needed);
+    if (first_out != NULL) {
+        *first_out = first;
+    }
+    return s_get_ram_slot_info(first, base_out, NULL, NULL) == ORA_RESULT_OK;
+}
+
 static bool nv_poke_begin_impl(uint8_t slot) {
     if (s_nv_state.active) {
         s_log("NPB: transaction already in progress");
+        return false;
+    }
+    // "Fails if ... the RAM slot specified is invalid, active or too small."
+    // The first two are checked whichever way the transaction is staged: the
+    // host is telling us which slot it is willing to lose, and naming the one
+    // being served is a mistake worth reporting even when we do not need it.
+    if (!host_slot_valid(slot)) {
+        s_log("NPB: slot %u is not one the host may name", (unsigned)slot);
         return false;
     }
     if (slot == s_state.active_slot) {
@@ -899,22 +1069,34 @@ static bool nv_poke_begin_impl(uint8_t slot) {
         return false;
     }
 
-    uint32_t slot_base, slot_size;
-    if (s_get_ram_slot_info(slot, &slot_base, &slot_size, NULL) != ORA_RESULT_OK) {
-        s_log("NPB: invalid slot %u", (unsigned)slot);
-        return false;
-    }
+    uint32_t erase_fn_size =
+        ORA_STAGED_FN_SIZE(__flash_erase_fn_start, __flash_erase_fn_end);
+    uint32_t required = nv_staging_required();
 
-    uint32_t erase_fn_size = (uint32_t)(__flash_erase_fn_end - __flash_erase_fn_start);
-    uint32_t required      = NV_STORAGE_SIZE + erase_fn_size;
-    if (slot_size < required) {
-        s_log("NPB: slot %u too small (%u < %u)",
-              (unsigned)slot, (unsigned)slot_size, (unsigned)required);
-        return false;
+    // Prefer our own slots; fall back to the one the host lent us.  Only the
+    // fallback cares how big that slot is — which is the whole point, since a
+    // slot is only as large as the ROM being served and a small ROM could
+    // never lend one big enough.
+    uint32_t slot_base, slot_size;
+    uint8_t  first_private;
+    if (nv_private_staging(&slot_base, &first_private)) {
+        slot_size = required;
+        s_log("NPB: staging in this plugin's own slots, from %u",
+              (unsigned)first_private);
+    } else {
+        if (s_get_ram_slot_info(slot, &slot_base, &slot_size, NULL) != ORA_RESULT_OK) {
+            s_log("NPB: invalid slot %u", (unsigned)slot);
+            return false;
+        }
+        if (slot_size < required) {
+            s_log("NPB: slot %u too small (%u < %u)",
+                  (unsigned)slot, (unsigned)slot_size, (unsigned)required);
+            return false;
+        }
     }
 
     // Copy NV flash contents into staging (linear SRAM write, no mangling)
-    volatile uint8_t *staging = (volatile uint8_t *)slot_base;
+    volatile uint8_t *staging = ORA_SRAM_PTR(slot_base);
     for (uint32_t i = 0u; i < NV_STORAGE_SIZE; i++) {
         staging[i] = __nv_storage_start[i];
     }
@@ -959,7 +1141,7 @@ static bool nv_poke_impl(uint8_t byte, uint8_t loc_lsb, uint8_t loc_msb) {
         s_log("NV_POKE: location %u out of range", (unsigned)location);
         return false;
     }
-    ((volatile uint8_t *)s_nv_state.staging_base)[location] = byte;
+    ((volatile uint8_t *)ORA_SRAM_PTR(s_nv_state.staging_base))[location] = byte;
     return true;
 }
 
@@ -1046,16 +1228,14 @@ static bool exec_nv_poke_commit(void) {
     connect_internal_flash();
 
     // Read clkdiv and compute flash offset before exiting XIP.
-    uint8_t  clkdiv    = (uint8_t)((XIP_QMI_M0_TIMING >> XIP_QMI_M0_CLKDIV_SHIFT)
-                                    & XIP_QMI_M0_CLKDIV_MASK);
-    uint32_t flash_offs = (uint32_t)__nv_storage_start - RP2350_FLASH_BASE;
+    uint8_t  clkdiv     = ORA_XIP_CLKDIV();
+    uint32_t flash_offs = ORA_FLASH_OFFSET(__nv_storage_start);
 
     s_log("NPC: offs=0x%08X clkdiv=%u", (unsigned)flash_offs, (unsigned)clkdiv);
 
     // Erase the NV sector via the function blob copied into the RAM slot.
-    // Thumb bit must be set on the function pointer.
-    nv_flash_erase_critical_fn_t erase_fn =
-        (nv_flash_erase_critical_fn_t)((s_nv_state.staging_base + NV_STORAGE_SIZE) | 1u);
+    nv_flash_erase_critical_fn_t erase_fn = ORA_STAGED_FN_PTR(
+        nv_flash_erase_critical_fn_t, s_nv_state.staging_base + NV_STORAGE_SIZE);
     erase_fn(
         flash_exit_xip,
         flash_range_erase,
@@ -1071,7 +1251,7 @@ static bool exec_nv_poke_commit(void) {
     // XIP is restored. Write staging buffer to flash.
     // flash_range_program is a bootrom function and returns void;
     // failure is not detectable here.
-    flash_range_program(flash_offs, (const uint8_t *)s_nv_state.staging_base, NV_STORAGE_SIZE);
+    flash_range_program(flash_offs, ORA_SRAM_PTR(s_nv_state.staging_base), NV_STORAGE_SIZE);
 
     exit_exclusive();
 
@@ -1087,6 +1267,15 @@ static bool exec_nv_poke_commit_byte(void) {
     uint8_t slot    = ring_read_byte();
     if (slot == 0xAAu) {
         s_log("NV_POKE_COMMIT_BYTE: slot 0xAA invalid");
+        return false;
+    }
+
+    // Checked before the unchanged-byte short cut below, not after.  The
+    // command "fails if NV storage is not writable", and a host that gets
+    // status-OK from a write command has been told the write happened; on a
+    // read-only device it cannot have, whatever the byte was.
+    if (!nv_writable()) {
+        s_log("NV_POKE_COMMIT_BYTE: NV storage is read-only");
         return false;
     }
 
@@ -1111,19 +1300,73 @@ static bool exec_nv_poke_commit_byte(void) {
 // Command dispatch
 // ---------------------------------------------------------------------------
 
+// Number of argument bytes a command declares.
+//
+// Needed so the device can take a command's arguments off the wire even when
+// it will not act on the command.  The Command Mode Constraint makes that
+// obligatory: the device "will continue to consume address reads as argument
+// bytes of the current partially-received command until that command's
+// expected argument count is satisfied".  A command refused because it is not
+// valid in the current mode must still satisfy that count, or the host's next
+// bytes are read as a command frame and the session desyncs.
+//
+// Only the groups that can be refused for being in the wrong mode are listed;
+// everything else returns 0, which is also right for an unknown command, whose
+// argument count the device cannot know.
+static uint8_t cmd_arg_count(uint8_t group, uint8_t cmd) {
+    if (group == GRP_READ) {
+        switch (cmd) {
+            case CMD_GET_FLASH_SLOT_INFO: return 1u;
+            case CMD_SLOT_PEEK:           return 5u;
+            default:                      return 0u;
+        }
+    }
+    if (group == GRP_NV_STORAGE) {
+        switch (cmd) {
+            case CMD_NV_PEEK:             return 3u;
+            case CMD_NV_POKE_BEGIN:       return 1u;
+            case CMD_NV_POKE:             return 3u;
+            case CMD_NV_POKE_COMMIT_BYTE: return 4u;
+            default:                      return 0u;
+        }
+    }
+    return 0u;
+}
+
+// Read and throw away a command's argument bytes.
+static void discard_args(uint8_t count) {
+    while (count--) {
+        (void)ring_read_byte();
+    }
+}
+
+// True for the commands the specification requires to leave the response
+// header untouched: RBCP_RESET ("there is never any response from this
+// command"), EXIT_CMD_RESP_SILENT and SWITCH_AND_EXIT (both "without updating
+// the response header").
+//
+// Decided from GROUP and CMD alone, before the command runs.  Every other
+// command needs cmd_begin to run *before* it is processed — that ordering is
+// what stops a host observing a false complete — so by the time the command
+// itself could report being silent, the header has already been written.
+static bool cmd_is_silent(uint8_t group, uint8_t cmd) {
+    if (group == GRP_RESET) {
+        return cmd == CMD_RBCP_RESET;
+    }
+    if (group == GRP_CONTROL) {
+        return (cmd == CMD_EXIT_CMD_RESP_SILENT) || (cmd == CMD_SWITCH_AND_EXIT);
+    }
+    return false;
+}
+
 // Dispatch one command.  Reads argument bytes from the ring buffer.
 // Uses s_state.active_slot for all back-channel writes.
-//
-// exit_silent_out: set to true for commands that must not trigger cmd_end
-//                  (EXIT_CMD_RESP_SILENT, SWITCH_AND_EXIT).
 //
 // Returns the ok/fail result for cmd_end.
 static bool dispatch(
     uint8_t group,
-    uint8_t cmd,
-    bool *exit_silent_out
+    uint8_t cmd
 ) {
-    *exit_silent_out = false;
     bool ok = false;
 
     switch (group) {
@@ -1144,8 +1387,7 @@ static bool dispatch(
                     ok = true;
                     break;
                 case CMD_EXIT_CMD_RESP_SILENT:
-                    s_state.active   = false;
-                    *exit_silent_out = true;
+                    s_state.active = false;
                     ok = true;
                     break;
                 case CMD_SWITCH_AND_EXIT:
@@ -1153,9 +1395,8 @@ static bool dispatch(
                     // active_slot cache is NOT updated: this command exits with no
                     // back-channel writes to the new slot, so the cached value is
                     // irrelevant for the remainder of the session.
-                    ok               = exec_switch_slot();
-                    s_state.active   = false;
-                    *exit_silent_out = true;
+                    ok             = exec_switch_slot();
+                    s_state.active = false;
                     break;
                 default:
                     // Unknown command: no args consumed.  This will desync the
@@ -1166,6 +1407,13 @@ static bool dispatch(
             break;
 
         case GRP_READ:
+            // "All commands in this group are valid in command-response mode
+            // only."  Consume the frame, then discard it.
+            if (!s_state.active) {
+                discard_args(cmd_arg_count(group, cmd));
+                ok = false;
+                break;
+            }
             switch (cmd) {
                 case CMD_GET_FLASH_FLASH_SLOT_COUNT:
                     ok = exec_get_flash_slot_count();
@@ -1230,7 +1478,13 @@ static bool dispatch(
             break;
 
         case GRP_NV_STORAGE:
-            if (!s_state.active) { ok = false; break; }
+            // As GRP_READ: command-response mode only, and the arguments are
+            // consumed before the command is discarded.
+            if (!s_state.active) {
+                discard_args(cmd_arg_count(group, cmd));
+                ok = false;
+                break;
+            }
             switch (cmd) {
                 case CMD_GET_NV_CAPABILITY:
                     ok = exec_get_nv_capability();
@@ -1264,7 +1518,6 @@ static bool dispatch(
                 case CMD_RBCP_RESET:
                     init_rbcp(false);
                     s_state.active = false; // Unecessary as init_rbcp sets this.
-                    *exit_silent_out = true;
                     s_log("RBCP_RESET: state reset, active_slot=%u", (unsigned)s_state.active_slot);
                     ok = true;
                     break;
@@ -1306,17 +1559,17 @@ static bool dispatch(
 // waiting for the next knock.
 static bool run_command(uint8_t group, uint8_t cmd) {
     bool was_active = s_state.active;
-    bool exit_silent;
+    bool silent     = cmd_is_silent(group, cmd);
 
-    if (was_active) {
+    if (was_active && !silent) {
         cmd_begin(s_state.active_slot, group, cmd);
     }
 
-    bool ok = dispatch(group, cmd, &exit_silent);
+    bool ok = dispatch(group, cmd);
 
     bool now_active = s_state.active;
 
-    if (was_active && !exit_silent) {
+    if (was_active && !silent) {
         // Normal Command-Response mode: complete the processing sequence.
         // s_state.active_slot may have been updated by CMD_SWITCH_SLOT
         // inside dispatch, so use the current cached value.
@@ -1335,7 +1588,7 @@ static bool run_command(uint8_t group, uint8_t cmd) {
     }
 
     // Command mode (!was_active && !now_active): no back-channel, nothing to write.
-    // EXIT_CMD_RESP_SILENT / SWITCH_AND_EXIT (exit_silent=true): no header update.
+    // A silent command (see cmd_is_silent): no header update at all.
 
     return now_active;
 }
@@ -1351,7 +1604,7 @@ __attribute__((noinline)) static void rbcp_setup(
     // Retrieve API function pointers
     s_lookup               = ora_lookup_fn;
     s_log                  = ora_lookup_fn(ORA_ID_LOG);
-    s_demangle             = ora_lookup_fn(ORA_ID_DEMANGLE_ADDR);
+    s_demangle             = ora_lookup_fn(ORA_ID_DEMANGLE_OBSERVED_ADDR);
     s_reprogram            = ora_lookup_fn(ORA_ID_REPROGRAM_RAM_ROM_SLOT);
     s_get_ram_slot_info    = ora_lookup_fn(ORA_ID_GET_RAM_SLOT_INFO);
     s_get_ram_slot_count   = ora_lookup_fn(ORA_ID_GET_RAM_SLOT_COUNT);
@@ -1377,6 +1630,17 @@ __attribute__((noinline)) static void rbcp_setup(
     s_log("RBCP plugin starting");
 
     init_rbcp(true);
+
+    // The observed-address geometry is fixed for the served ROM type, so read
+    // the unobserved-LSB count once here and cache the value rather than the
+    // accessor pointer.
+    ora_get_unobserved_addr_bits_fn_t get_unobserved_addr_bits =
+        ora_lookup_fn(ORA_ID_GET_UNOBSERVED_ADDR_BITS);
+    s_unobserved_addr_bits = 0;
+    if (get_unobserved_addr_bits(&s_unobserved_addr_bits) != ORA_RESULT_OK) {
+        s_log("RBCP: get_unobserved_addr_bits failed; assuming 0 (fully observed)");
+        s_unobserved_addr_bits = 0;
+    }
 
     // Set up address monitor in control mode so the plugin can modify the
     // ROM image being served (required for back-channel writes).

@@ -9,7 +9,8 @@ use crate::utils::{parse_u8, parse_u32};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use enum_dispatch::enum_dispatch;
 
-use onerom_cli::usb::RebootArgs;
+use onerom_cli::pin::{Pin, parse_pin};
+use onerom_cli::usb::{GpioState as WireGpioState, RebootArgs};
 
 #[derive(Debug, Args)]
 pub struct ControlArgs {
@@ -74,17 +75,30 @@ pub enum ControlCommands {
     )]
     Poke(ControlPokeArgs),
 
-    /// Assert the host reset signal via the One ROM reset GPIO (not yet supported).
+    /// Pulse a One ROM GPIO low to reset the host system.
     ///
-    /// Drives the reset pin to reset the host system the One ROM is
-    /// installed in. Useful in scripted workflows to reset the host after
-    /// programming a new ROM image.
+    /// Pulses the named GPIO low, then releases it to high impedance, to
+    /// reset the host system the One ROM is installed in. Useful in scripted
+    /// workflows to reset the host after programming a new ROM image.
+    ///
+    /// --pin is the pin your reset wire is soldered to - typically an X pad, or
+    /// an image-select pad whose jumper you have removed. Name it by pad
+    /// ('x1', 'sel_a') or by MCU GPIO ('gpio9'). Run 'onerom inspect header' to
+    /// see which GPIO is behind each pad.
+    ///
+    /// The reset line is only ever driven low and then released: a reset net
+    /// has its own pull-up and may have other drivers on it, so there is
+    /// deliberately no way to drive it high. Use 'onerom control pin' if you
+    /// need arbitrary states.
+    ///
+    /// The device times the pulse, not this command, so an interrupted CLI
+    /// cannot leave the host held in reset.
     ///
     /// Examples:
     ///
-    ///   onerom control reset
+    ///   onerom control reset --pin x1
     ///
-    ///   onerom control reset --hold 500
+    ///   onerom control reset --pin gpio9 --hold 500
     Reset(ControlResetArgs),
 
     /// Select the active ROM slot (not yet supported).
@@ -97,16 +111,32 @@ pub enum ControlCommands {
     ///   onerom control select --slot 2
     Select(ControlSelectArgs),
 
-    /// Set the state of a One ROM GPIO pin (not yet supported).
+    /// Drive a One ROM pin high, low or high-impedance.
     ///
-    /// Sets the specified GPIO pin to high, low, or high-impedance (z).
+    /// --pin names an MCU GPIO, written 'gpio<N>', or a header pad: 'sel_a'
+    /// to 'sel_e', 'x1' or 'x2'. Run 'onerom inspect header' to see which GPIO
+    /// is behind each header pad, and 'onerom inspect gpio' to see what One ROM
+    /// is currently using each GPIO for.
     ///
-    /// Example:
+    /// Without --hold the state is latched until something changes it. With
+    /// --hold the device holds the state for that many milliseconds and then
+    /// applies --then (high impedance unless you say otherwise). The device
+    /// times the hold, not this command, so an interrupted CLI cannot leave a
+    /// pin latched.
     ///
-    ///   onerom control gpio --pin 3 --state high
+    /// A GPIO One ROM is itself using is refused unless --force is given.
+    /// Forcing a pin One ROM drives (a data pin) breaks ROM serving until the
+    /// device is rebooted; forcing one it only reads (address, chip-select,
+    /// /BYTE) is undone by setting it back to z.
     ///
-    ///   onerom control gpio --pin 3 --state z
-    Gpio(ControlGpioArgs),
+    /// Examples:
+    ///
+    ///   onerom control pin --pin gpio9 --state high
+    ///
+    ///   onerom control pin --pin x1 --state 0 --hold 250
+    ///
+    ///   onerom control pin --pin sel_a --state z
+    Pin(ControlPinArgs),
 
     /// Erase this One ROM's flash memory.
     ///
@@ -246,9 +276,24 @@ impl From<&ControlRebootArgs> for RebootArgs {
 
 #[derive(Debug, Args)]
 pub struct ControlResetArgs {
+    /// Pin the reset wire is connected to: an MCU GPIO written gpio<N>, or a
+    /// header pad name (sel_a..sel_e, x1, x2).
+    ///
+    /// A bare number is rejected - see 'onerom inspect header' for the GPIO
+    /// behind each header pad.
+    #[arg(long, value_name = "PIN", value_parser = parse_pin)]
+    pub pin: Pin,
+
+    /// Board type, overriding what the connected One ROM reports.
+    ///
+    /// Only needed to resolve a header pad name on a One ROM whose board type
+    /// this build does not recognise. A GPIO named as gpio<N> needs no board.
+    #[arg(long, short, value_name = "BOARD")]
+    pub board: Option<String>,
+
     /// Duration in milliseconds to hold the reset signal asserted.
     /// Defaults to 100.
-    #[arg(long, value_name = "MS", default_value = "100")]
+    #[arg(long, value_name = "MS", default_value = "100", value_parser = parse_u32)]
     pub hold: u32,
 }
 
@@ -261,7 +306,7 @@ impl CommandTrait for ControlResetArgs {
 #[derive(Debug, Args)]
 pub struct ControlSelectArgs {
     /// Image slot index to activate (0-15).
-    #[arg(long, short = 'l', value_name = "INDEX", required = true)]
+    #[arg(long, value_name = "INDEX")]
     pub slot: u8,
 }
 
@@ -271,28 +316,83 @@ impl CommandTrait for ControlSelectArgs {
     }
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum GpioState {
-    /// Drive the pin high.
+    /// Drive the pin high. Also accepted as '1'.
+    #[value(alias = "1")]
     High,
-    /// Drive the pin low.
+    /// Drive the pin low. Also accepted as '0'.
+    #[value(alias = "0")]
     Low,
     /// Set the pin to high-impedance (tri-state).
     Z,
 }
 
-#[derive(Debug, Args)]
-pub struct ControlGpioArgs {
-    /// GPIO pin number to control.
-    #[arg(long, value_name = "PIN", required = true)]
-    pub pin: u8,
-
-    /// Desired pin state: high, low, or z (high-impedance).
-    #[arg(long, value_name = "STATE", required = true)]
-    pub state: GpioState,
+impl From<GpioState> for WireGpioState {
+    fn from(state: GpioState) -> Self {
+        match state {
+            GpioState::High => WireGpioState::High,
+            GpioState::Low => WireGpioState::Low,
+            // The wire (and firmware) call high impedance "input", because
+            // releasing the output driver is what makes it so. The CLI spells
+            // it 'z', which is what a schematic calls it.
+            GpioState::Z => WireGpioState::Input,
+        }
+    }
 }
 
-impl CommandTrait for ControlGpioArgs {
+impl std::fmt::Display for GpioState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GpioState::High => write!(f, "high"),
+            GpioState::Low => write!(f, "low"),
+            GpioState::Z => write!(f, "high impedance"),
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct ControlPinArgs {
+    /// Pin to drive: an MCU GPIO written gpio<N>, or a header pad name
+    /// (sel_a..sel_e, x1, x2).
+    ///
+    /// A bare number is rejected - see 'onerom inspect header' for the GPIO
+    /// behind each header pad.
+    #[arg(long, value_name = "PIN", value_parser = parse_pin)]
+    pub pin: Pin,
+
+    /// Board type, overriding what the connected One ROM reports.
+    ///
+    /// Only needed to resolve a header pad name on a One ROM whose board type
+    /// this build does not recognise. A GPIO named as gpio<N> needs no board.
+    #[arg(long, short, value_name = "BOARD")]
+    pub board: Option<String>,
+
+    /// Desired pin state: high, low, or z (high-impedance).
+    ///
+    /// '1' and '0' are accepted for high and low.
+    #[arg(long, value_name = "STATE")]
+    pub state: GpioState,
+
+    /// Hold --state for this many milliseconds, then apply --then.
+    ///
+    /// Omit to latch --state until something else changes it. The device times
+    /// the hold, so it completes even if this command does not.
+    #[arg(long, value_name = "MS", value_parser = parse_u32)]
+    pub hold: Option<u32>,
+
+    /// State to apply when --hold expires. Defaults to z. Requires --hold.
+    ///
+    /// '1' and '0' are accepted for high and low.
+    #[arg(long, value_name = "STATE", requires = "hold")]
+    pub then: Option<GpioState>,
+
+    /// Drive the GPIO even though One ROM is using it for serving.
+    #[arg(long, short)]
+    pub force: bool,
+}
+
+impl CommandTrait for ControlPinArgs {
     fn requires_device(&self) -> bool {
         true
     }
@@ -312,7 +412,7 @@ impl CommandTrait for ControlPokeArgs {
 
 #[derive(Debug, Args)]
 #[command(group = ArgGroup::new("erase_target").required(true).args(["all", "offset", "address"]))]
-#[command(group = ArgGroup::new("reboot_mode").required(false).args(["reboot_stopped", "reboot_running"]))]
+#[command(group = ArgGroup::new("reboot_mode").required(false).args(["stopped", "running"]))]
 pub struct ControlEraseArgs {
     /// Erase all flash contents.
     #[arg(long, short)]
@@ -323,7 +423,7 @@ pub struct ControlEraseArgs {
     /// Must be 4096-aligned. Pair each with a --length.
     /// Can be repeated for multiple ranges.
     /// Mutually exclusive with --address.
-    #[arg(long, short, value_name = "OFFSET", value_parser = parse_u32, action = clap::ArgAction::Append, conflicts_with = "address", requires = "length")]
+    #[arg(long, value_name = "OFFSET", value_parser = parse_u32, action = clap::ArgAction::Append, conflicts_with = "address", requires = "length")]
     pub offset: Vec<u32>,
 
     /// Erase at absolute address(es).
@@ -346,15 +446,15 @@ pub struct ControlEraseArgs {
     pub no_reboot: bool,
 
     /// Reboot One ROM into stopped (bootloader) mode after erasing.
-    #[arg(long, short = 'p', conflicts_with = "reboot_running")]
-    pub reboot_stopped: bool,
+    #[arg(long, short = 'p', conflicts_with = "running")]
+    pub stopped: bool,
 
     /// Reboot One ROM into running mode after erasing.
-    #[arg(long, short = 'r', conflicts_with = "reboot_stopped")]
-    pub reboot_running: bool,
+    #[arg(long, short = 'r', conflicts_with = "stopped")]
+    pub running: bool,
 
     /// Mount mass storage device when rebooting into stopped mode.
-    #[arg(long, short = 'm', requires = "reboot_stopped")]
+    #[arg(long, short = 'm', requires = "stopped")]
     pub msd: bool,
 
     /// Don't pause after reboot for One ROM to re-enumerate (reappear)
@@ -371,9 +471,9 @@ impl CommandTrait for ControlEraseArgs {
 
 impl From<&ControlEraseArgs> for RebootArgs {
     fn from(args: &ControlEraseArgs) -> Self {
-        if args.reboot_stopped {
+        if args.stopped {
             RebootArgs::stopped(args.msd, args.fast)
-        } else if args.reboot_running {
+        } else if args.running {
             RebootArgs::running(args.fast, true)
         } else {
             RebootArgs::none()
@@ -435,13 +535,19 @@ pub struct ControlPokeMemoryArgs {
     ///
     /// Accepts decimal and hexadecimal (0x prefix) formats.
     /// Mutually exclusive with --input.
-    #[arg(long, short, visible_alias = "value", value_name = "BYTE", value_parser = parse_u8, group = "poke_source")]
+    #[arg(long, visible_alias = "value", value_name = "BYTE", value_parser = parse_u8, group = "poke_source")]
     pub byte: Option<u8>,
 
     /// Write the contents of this binary file.
     ///
     /// Mutually exclusive with --value.
-    #[arg(long, visible_alias = "in", value_name = "FILE", group = "poke_source")]
+    #[arg(
+        long,
+        short,
+        visible_alias = "in",
+        value_name = "FILE",
+        group = "poke_source"
+    )]
     pub input: Option<String>,
 }
 
@@ -464,13 +570,19 @@ pub struct ControlPokeLiveArgs {
     ///
     /// Accepts decimal and hexadecimal (0x prefix) formats.
     /// Mutually exclusive with --input.
-    #[arg(long, short, visible_alias = "value", value_name = "BYTE", value_parser = parse_u8, group = "poke_source")]
+    #[arg(long, visible_alias = "value", value_name = "BYTE", value_parser = parse_u8, group = "poke_source")]
     pub byte: Option<u8>,
 
     /// Write the contents of this binary file.
     ///
     /// Mutually exclusive with --byte.
-    #[arg(long, visible_alias = "in", value_name = "FILE", group = "poke_source")]
+    #[arg(
+        long,
+        short,
+        visible_alias = "in",
+        value_name = "FILE",
+        group = "poke_source"
+    )]
     pub input: Option<String>,
 
     /// Only write bytes that differ from the current device's ROM content.

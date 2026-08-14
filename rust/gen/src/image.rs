@@ -21,6 +21,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::panic;
 
+use crate::ChipTypeSpec;
 use onerom_config::chip::{ChipFunction, ChipType};
 use onerom_config::fw::{FirmwareVersion, ServeAlg};
 use onerom_config::hw::Board;
@@ -30,7 +31,8 @@ use crate::meta::{
     CHIP_SET_FIRMWARE_OVERRIDES_METADATA_LEN, CHIP_SET_METADATA_LEN,
     CHIP_SET_METADATA_LEN_EXTRA_INFO,
 };
-use crate::{Error, Result, builder::FirmwareConfig};
+use crate::transform::{Transform, apply_transforms};
+use crate::{Error, FirmwareConfig, Location, Result};
 use crate::{MIN_FIRMWARE_OVERRIDES_VERSION, PAD_METADATA_BYTE};
 
 /// Value to use when told to pad a Chip image
@@ -47,6 +49,11 @@ const CHIP_METADATA_LEN_WITH_FILENAME: usize = 8;
 
 // From 0.6.3 28 pin Fire boards report 18 address pins, up from 16.
 const MIN_FW_VER_FIRE_28_18_ADDR_PINS: FirmwareVersion = FirmwareVersion::new(0, 6, 3, 0);
+
+/// Per-slot RAM budget: only one slot is served at a time, so this is
+/// the maximum size of any single slot's ROM table (`build_rom_image`'s
+/// return value).
+pub const MAX_IMAGE_SIZE: usize = 512 * 1024;
 
 /// How to handle Chip images that are too small for the Chip type
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -98,6 +105,92 @@ impl core::fmt::Display for SizeHandling {
     }
 }
 
+/// Format of a supplied ROM image file.
+///
+/// The default, [`FileFormat::Binary`], treats the supplied file as a raw
+/// binary image.  [`FileFormat::IntelHex`] decodes an Intel HEX file into a
+/// binary image before it is placed into the firmware; see the
+/// [`ihex`](crate::ihex) module for the supported record types and the
+/// decoding rules.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum FileFormat {
+    /// Raw binary image (default).
+    #[default]
+    Binary,
+
+    /// Intel HEX image, decoded to a binary image before use.
+    #[serde(
+        rename = "ihex",
+        alias = "intel_hex",
+        alias = "intel-hex",
+        alias = "intelhex",
+        alias = "hex"
+    )]
+    IntelHex,
+}
+
+impl FileFormat {
+    /// Returns true if this is the default (raw binary) format.
+    pub fn is_binary(&self) -> bool {
+        matches!(self, FileFormat::Binary)
+    }
+
+    /// A short human-readable label for this format, for UI display (e.g. a
+    /// format picker). Distinct from the serialised config value: this is
+    /// `"Intel HEX"`, the config value is `"ihex"`.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            FileFormat::Binary => "Binary",
+            FileFormat::IntelHex => "Intel HEX",
+        }
+    }
+
+    /// The canonical name of this format, as spelled in a config file and on
+    /// the command line. `"Binary"`/`"Intel HEX"` is
+    /// [`FileFormat::display_name`]; this is `"binary"`/`"ihex"`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            FileFormat::Binary => "binary",
+            FileFormat::IntelHex => "ihex",
+        }
+    }
+
+    /// Parses a format name case-insensitively, for command-line parsing.
+    /// Accepts `binary`/`bin`/`raw` for [`FileFormat::Binary`] and
+    /// `ihex`/`intel_hex`/`intel-hex`/`intelhex`/`hex` for
+    /// [`FileFormat::IntelHex`].
+    pub fn try_from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "binary" | "bin" | "raw" => Some(FileFormat::Binary),
+            "ihex" | "intel_hex" | "intel-hex" | "intelhex" | "hex" => Some(FileFormat::IntelHex),
+            _ => None,
+        }
+    }
+
+    /// All supported format values, for enumerating in help text.
+    ///
+    /// The CLI builds `--from`/`--to`'s accepted values from this, so a format
+    /// added here appears in `--help` and is accepted on the command line with
+    /// no CLI change. The match exists only to make that automatic: it forces a
+    /// new variant to be a compile error here rather than silently missing from
+    /// the list, which `Display` and [`FileFormat::try_from_str`] cannot do on
+    /// their own.
+    pub fn supported_values() -> &'static [Self] {
+        match FileFormat::Binary {
+            FileFormat::Binary | FileFormat::IntelHex => {}
+        }
+        &[FileFormat::Binary, FileFormat::IntelHex]
+    }
+}
+
+impl core::fmt::Display for FileFormat {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 /// Possible Chip Select line logic options
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -124,27 +217,45 @@ impl core::fmt::Display for CsLogic {
     }
 }
 
-/// Location within a larger Chip image that the specific image to use resides
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub struct Location {
-    /// Start of the image within the larger Chip image
-    pub start: usize,
-
-    /// Length of the image within the larger Chip image.  Must match the
-    /// selected Chip type, or SizeHandling will be applied.
-    pub length: usize,
-}
-
 impl CsLogic {
+    /// The canonical name of this value, as accepted on the command line.
+    ///
+    /// Kebab-case, matching how the CLI spells everything else.
+    /// [`Display`](CsLogic) is the prose form (`"active low"`), which is for
+    /// reading rather than parsing.
+    pub fn name(&self) -> &'static str {
+        match self {
+            CsLogic::ActiveLow => "active-low",
+            CsLogic::ActiveHigh => "active-high",
+            CsLogic::Ignore => "ignore",
+        }
+    }
+
+    /// Parses a chip-select value case-insensitively.
+    ///
+    /// Accepts the kebab-case CLI spelling, the snake_case spelling a config
+    /// file uses, and the `0`/`1` shorthand. `ignore` is not a polarity - it
+    /// says this One ROM does not monitor the line at all - and whether a given
+    /// chip may use it is settled later, by `allow_cs_ignore`.
     pub fn try_from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "0" => Some(CsLogic::ActiveLow),
-            "1" => Some(CsLogic::ActiveHigh),
+            "active-low" | "active_low" | "0" => Some(CsLogic::ActiveLow),
+            "active-high" | "active_high" | "1" => Some(CsLogic::ActiveHigh),
             "ignore" => Some(CsLogic::Ignore),
             _ => None,
         }
+    }
+
+    /// All chip-select values, for enumerating in help and error text.
+    ///
+    /// The match forces a new variant to be a compile error here rather than
+    /// silently missing from what the CLI advertises - see
+    /// [`FileFormat::supported_values`].
+    pub fn supported_values() -> &'static [Self] {
+        match CsLogic::ActiveLow {
+            CsLogic::ActiveLow | CsLogic::ActiveHigh | CsLogic::Ignore => {}
+        }
+        &[CsLogic::ActiveLow, CsLogic::ActiveHigh, CsLogic::Ignore]
     }
 
     pub fn c_value(&self) -> &str {
@@ -164,10 +275,55 @@ impl CsLogic {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Number of a chip type's top address lines that cannot fit in the ROM
+/// table, and must therefore act as a half-select instead.
+///
+/// Mirrors the in-range/excess split `derive_addr_layout` performs. The
+/// result is independent of bit mode: `BitMode16` drops one address line
+/// (`A-1`, served by the data PIO rather than the address PIO) but also
+/// halves the usable table depth, so both terms fall by one and cancel:
+///
+/// - `BitMode8`:  `num_addr_lines - log2(MAX_IMAGE_SIZE / 1)`
+/// - `BitMode16`: `(num_addr_lines - 1) - log2(MAX_IMAGE_SIZE / 2)`
+///
+/// `derive_addr_layout` computes the split itself because it also needs the
+/// in-range count and the resolved GPIOs; this is the chip-type-level
+/// question, answerable without a board.
+pub const fn num_excess_addr_lines(chip_type: &ChipType) -> usize {
+    let max_useful_addr_lines = MAX_IMAGE_SIZE.ilog2() as usize;
+    chip_type
+        .num_addr_lines()
+        .saturating_sub(max_useful_addr_lines)
+}
+
+/// Whether a chip type's address space exceeds `MAX_IMAGE_SIZE`, so that its
+/// excess top address line(s) act as a half-select selected by `cs1`.
+///
+/// Such a chip has **no `cs1` control line** - here `cs1` names the
+/// half-select, not a pin - yet `cs1` is *required*, so that the user says
+/// which half this One ROM serves. Callers validating `cs1` against
+/// `control_lines()` must special-case it on this basis rather than on the
+/// chip type's name.
+///
+/// The 27C080 is the only such chip type today: two One ROMs each serve half
+/// of its 1MB, one configured `cs1=active_low` (lower 512KB) and the other
+/// `cs1=active_high` (upper 512KB), with A19 as the discriminator.
+pub const fn requires_half_select_cs1(chip_type: &ChipType) -> bool {
+    num_excess_addr_lines(chip_type) > 0
+}
+
+/// Chip select / chip enable configuration for a single Chip.
+///
+/// `ChipSelect` is used for 23-series and other chips with configurable CS
+/// lines.  `CeOe` is used for 27-series and similar chips where both /CE and
+/// /OE are fixed active-low with no user override (V1 behaviour, and V2 single
+/// chips where no override is needed).  `CeOeExplicit` is used in V2 multi-ROM
+/// sets where one of /CE or /OE is fly-leaded to an X pin (active chip select)
+/// and the other is tied active (Ignore).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CsConfig {
-    /// Configuration of the 3 possible Chip Select lines
+    /// Configuration of the 4 possible Chip Select lines
     ChipSelect {
         /// Where type is ChipSelect, CS1 is always required
         cs1: CsLogic,
@@ -177,39 +333,187 @@ pub enum CsConfig {
 
         /// Third chip select line, required for certain Chip Types
         cs3: Option<CsLogic>,
+
+        /// Fourth chip select line, required for certain Chip Types
+        /// (e.g. HM7641).  Defaulted for backwards compatibility with
+        /// `Chip`s serialized before CS4 existed.
+        #[serde(default)]
+        cs4: Option<CsLogic>,
     },
-    /// Configuration using CE/OE instead of chip select
+    /// Configuration using CE/OE instead of chip select, both fixed
+    /// active-low with no user override.
+    /// cs1_logic() returns ActiveLow (CE); cs2_logic() returns ActiveLow (OE).
     CeOe,
+    /// Configuration using CE/OE with explicit per-line logic values.
+    /// Used in V2 multi-ROM sets where one line is fly-leaded to an X pin
+    /// and the other is tied active (Ignore).
+    ///
+    /// cs1_logic() returns the non-Ignore line (the active chip select).
+    /// cs2_logic() returns the other line (Ignore for multi-ROM secondary
+    /// chips, or ActiveLow when both lines are monitored).
+    CeOeExplicit { ce: CsLogic, oe: CsLogic },
 }
 
 impl CsConfig {
-    pub fn new(cs1: Option<CsLogic>, cs2: Option<CsLogic>, cs3: Option<CsLogic>) -> Self {
-        if cs1.is_none() && cs2.is_none() && cs3.is_none() {
+    /// Construct from configurable CS lines (cs1/cs2/cs3/cs4).
+    /// When all four are None, falls back to CeOe (CE/OE chip with no
+    /// override).
+    ///
+    /// Prefer [`CsConfig::from_chip_type`], which resolves fixed-polarity CS
+    /// lines from the chip type rather than relying on the caller. This
+    /// constructor cannot tell a CE/OE chip from a chip whose CS lines are all
+    /// fixed (and so never specified by the user), and will return `CeOe` for
+    /// both.
+    pub fn new(
+        cs1: Option<CsLogic>,
+        cs2: Option<CsLogic>,
+        cs3: Option<CsLogic>,
+        cs4: Option<CsLogic>,
+    ) -> Self {
+        if cs1.is_none() && cs2.is_none() && cs3.is_none() && cs4.is_none() {
             Self::CeOe
         } else {
             let cs1 = cs1.expect("CS1 must be specified if any CS lines are used");
-            Self::ChipSelect { cs1, cs2, cs3 }
+            Self::ChipSelect { cs1, cs2, cs3, cs4 }
         }
     }
 
-    pub fn cs1_logic(&self) -> CsLogic {
+    /// Construct from a chip type and the user's control line configuration.
+    ///
+    /// A CS line's polarity may be mask-programmed at manufacture
+    /// (`Configurable`), in which case the user supplies it; or fixed by the
+    /// silicon (`FixedActiveLow`/`FixedActiveHigh`, e.g. the HM7641), in which
+    /// case it is read from the chip type and the user may only say
+    /// `CsLogic::Ignore` - "this One ROM does not monitor this line", which is
+    /// participation, not polarity. `check_cs_v2` rejects any attempt to state
+    /// the polarity of a fixed line.
+    ///
+    /// A chip type with no CS lines at all is a CE/OE chip, and falls through
+    /// to [`CsConfig::new_with_ce_oe`].
+    ///
+    /// `ce`/`oe` take precedence over the CS lines when either is specified,
+    /// preserving existing behaviour for chip types that declare both
+    /// (`allow_mixed_control`, currently only the 23C1001).
+    pub fn from_chip_type(
+        chip_type: &ChipType,
+        cs1: Option<CsLogic>,
+        cs2: Option<CsLogic>,
+        cs3: Option<CsLogic>,
+        cs4: Option<CsLogic>,
+        ce: Option<CsLogic>,
+        oe: Option<CsLogic>,
+    ) -> Self {
+        if ce.is_some() || oe.is_some() {
+            return Self::new_with_ce_oe(ce, oe);
+        }
+
+        // Resolve one CS line against the chip type:
+        // - fixed polarity: the silicon decides, unless the user said Ignore
+        // - configurable: the user decides
+        // - no such line on this chip: pass the user's value through. The
+        //   27C080 relies on this - its cs1 is the A19 excess-address
+        //   half-select, not a control line on the chip.
+        let resolve = |name: &str, user: Option<CsLogic>| -> Option<CsLogic> {
+            match chip_type.control_lines().iter().find(|l| l.name == name) {
+                Some(spec) => match spec.line_type.fixed_active_level() {
+                    Some(active_high) => Some(match user {
+                        Some(CsLogic::Ignore) => CsLogic::Ignore,
+                        _ => {
+                            if active_high {
+                                CsLogic::ActiveHigh
+                            } else {
+                                CsLogic::ActiveLow
+                            }
+                        }
+                    }),
+                    None => user,
+                },
+                None => user,
+            }
+        };
+
+        Self::new(
+            resolve("cs1", cs1),
+            resolve("cs2", cs2),
+            resolve("cs3", cs3),
+            resolve("cs4", cs4),
+        )
+    }
+
+    /// Construct from explicit CE/OE logic values.  Used for V2 CE/OE chips
+    /// where one line is set to Ignore in the config (fly-leaded to X pin in
+    /// a multi-ROM set).  Falls back to CeOe when both values are default
+    /// active-low, to preserve V1 compatibility.
+    pub fn new_with_ce_oe(ce: Option<CsLogic>, oe: Option<CsLogic>) -> Self {
+        let ce = ce.unwrap_or(CsLogic::ActiveLow);
+        let oe = oe.unwrap_or(CsLogic::ActiveLow);
+        if ce == CsLogic::ActiveLow && oe == CsLogic::ActiveLow {
+            Self::CeOe
+        } else {
+            Self::CeOeExplicit { ce, oe }
+        }
+    }
+
+    /// Returns the primary chip-select logic.
+    ///
+    /// For ChipSelect: cs1.
+    /// For CeOe: ActiveLow (both lines active, CE treated as primary).
+    /// For CeOeExplicit: the non-Ignore line (CE if CE != Ignore, else OE).
+    pub fn cs1_logic(&self) -> Option<CsLogic> {
         match self {
-            CsConfig::ChipSelect { cs1, .. } => *cs1,
-            CsConfig::CeOe => CsLogic::ActiveLow,
+            CsConfig::ChipSelect { cs1, .. } => Some(*cs1),
+            CsConfig::CeOe => Some(CsLogic::ActiveLow),
+            CsConfig::CeOeExplicit { ce, oe } => {
+                if *ce != CsLogic::Ignore {
+                    Some(*ce)
+                } else {
+                    Some(*oe)
+                }
+            }
         }
     }
 
+    /// Returns the secondary chip-select logic.
+    ///
+    /// For ChipSelect: cs2.
+    /// For CeOe: ActiveLow (OE is also active).
+    /// For CeOeExplicit: the complementary line to cs1 — should be Ignore
+    /// for multi-ROM secondary chips.
     pub fn cs2_logic(&self) -> Option<CsLogic> {
         match self {
             CsConfig::ChipSelect { cs2, .. } => *cs2,
             CsConfig::CeOe => Some(CsLogic::ActiveLow),
+            CsConfig::CeOeExplicit { ce, oe } => {
+                if *ce != CsLogic::Ignore {
+                    Some(*oe)
+                } else {
+                    Some(*ce)
+                }
+            }
         }
     }
 
+    /// Returns the tertiary chip-select logic.
+    ///
+    /// Only meaningful for ChipSelect chips with three or more CS lines.
+    /// Not applicable to CE/OE chips.
     pub fn cs3_logic(&self) -> Option<CsLogic> {
         match self {
             CsConfig::ChipSelect { cs3, .. } => *cs3,
             CsConfig::CeOe => None,
+            CsConfig::CeOeExplicit { .. } => None,
+        }
+    }
+
+    /// Returns the quaternary chip-select logic.
+    ///
+    /// Only meaningful for ChipSelect chips with four CS lines (e.g. the
+    /// HM7641). Not applicable to CE/OE chips.
+    pub fn cs4_logic(&self) -> Option<CsLogic> {
+        match self {
+            CsConfig::ChipSelect { cs4, .. } => *cs4,
+            CsConfig::CeOe => None,
+            CsConfig::CeOeExplicit { .. } => None,
         }
     }
 }
@@ -225,7 +529,7 @@ pub struct Chip {
     // Optional alternative label for the Chip, replacing filename
     label: Option<String>,
 
-    chip_type: ChipType,
+    chip_type: ChipTypeSpec,
 
     cs_config: CsConfig,
 
@@ -240,7 +544,7 @@ impl Chip {
         index: usize,
         filename: String,
         label: Option<String>,
-        chip_type: &ChipType,
+        chip_type: ChipTypeSpec,
         cs_config: CsConfig,
         data: Option<Vec<u8>>,
         location: Option<Location>,
@@ -249,7 +553,7 @@ impl Chip {
             index,
             filename,
             label,
-            chip_type: *chip_type,
+            chip_type,
             cs_config,
             data,
             location,
@@ -274,11 +578,24 @@ impl Chip {
 
     /// Returns the Chip type.
     pub fn chip_type(&self) -> &ChipType {
-        &self.chip_type
+        self.chip_type.resolved_ref()
+    }
+
+    /// Returns the exact ROM/chip type string the user entered for this Chip.
+    ///
+    /// Unlike [`Chip::chip_type`], which returns the resolved [`ChipType`]
+    /// (canonical across all spellings of the same part), this preserves the
+    /// user's original spelling for use in generated metadata.
+    pub fn chip_type_raw(&self) -> &str {
+        self.chip_type.raw()
     }
 
     pub fn has_data(&self) -> bool {
         self.data.is_some()
+    }
+
+    pub fn data(&self) -> Option<&[u8]> {
+        self.data.as_deref()
     }
 
     /// Returns a [`Chip`] instance.
@@ -286,6 +603,16 @@ impl Chip {
     /// Takes a raw Chip image (binary data, loaded from file) and processes it
     /// according to the specified size handling (none, duplicate, pad) to
     /// ensure it matches the expected size for the given Chip type.
+    ///
+    /// `blank_byte` is the value used to fill any padding introduced by
+    /// [`SizeHandling::Pad`] (and the automatic padding applied to plugin
+    /// images).  Callers pass [`PAD_BLANK_BYTE`] for raw binary images and
+    /// [`IHEX_BLANK_BYTE`](crate::ihex::IHEX_BLANK_BYTE) for Intel HEX images,
+    /// which have already been decoded to a binary image by the caller.
+    ///
+    /// `transforms` are applied to the image after any `location` slice and
+    /// before it is reconciled against the chip size; see the
+    /// [`transform`](crate::transform) module for why that is the order.
     #[allow(clippy::too_many_arguments)]
     pub fn from_raw_rom_image(
         index: usize,
@@ -293,15 +620,37 @@ impl Chip {
         label: Option<String>,
         source: Option<&[u8]>,
         mut dest: Vec<u8>,
-        chip_type: &ChipType,
+        chip_type_spec: &ChipTypeSpec,
         cs_config: CsConfig,
         size_handling: &SizeHandling,
+        blank_byte: u8,
         location: Option<Location>,
+        transforms: &[Transform],
     ) -> Result<Self> {
+        // Resolved type drives all sizing/handling logic below; the spec is
+        // carried through to the constructed Chip so the user's raw spelling
+        // survives into metadata.
+        let chip_type = chip_type_spec.resolved_ref();
+
+        // Validate transforms before the source-less early return below, so a
+        // misconfigured transform on a chip with no image (a RAM chip) is still
+        // reported rather than being carried silently into the metadata.
+        for transform in transforms {
+            transform
+                .validate()
+                .map_err(|e| Error::Transform { index, source: e })?;
+        }
+
         if source.is_none() {
             if chip_type.chip_function() == ChipFunction::Ram {
                 return Ok(Self::new(
-                    index, filename, label, chip_type, cs_config, None, location,
+                    index,
+                    filename,
+                    label,
+                    chip_type_spec.clone(),
+                    cs_config,
+                    None,
+                    location,
                 ));
             } else {
                 // This is an internal error
@@ -339,6 +688,20 @@ impl Chip {
             source
         };
 
+        // Rearrange the located bytes before any size reconciliation, so
+        // padding and duplication operate on the final byte order rather than
+        // the transforms operating on filler.
+        let transformed;
+        let mut transform_used_size_handling = false;
+        let source: &[u8] = if transforms.is_empty() {
+            source
+        } else {
+            transformed = apply_transforms(source, transforms, size_handling, blank_byte)
+                .map_err(|e| Error::Transform { index, source: e })?;
+            transform_used_size_handling = transformed.used_size_handling;
+            &transformed.data
+        };
+
         let expected_size = chip_type.size_bytes();
         if dest.len() < expected_size {
             return Err(Error::BufferTooSmall {
@@ -358,13 +721,22 @@ impl Chip {
         // See what handling is required, if any
         match source.len().cmp(&expected_size) {
             Ordering::Equal => {
-                // Exact match - error if dup/pad specified unnecessarily
+                // Exact match - error if dup/pad specified unnecessarily.
+                // Unless a transform already consumed the size handling to
+                // resolve an odd-length image: it was needed after all, and
+                // landing on the exact chip size afterwards is the good
+                // outcome, not a reason to reject the build.
                 match size_handling {
                     SizeHandling::None => {
                         // Copy source to dest as-is
                         dest[..expected_size].copy_from_slice(&source[..expected_size]);
                     }
-                    _ => {
+                    SizeHandling::Duplicate | SizeHandling::Pad | SizeHandling::Truncate
+                        if transform_used_size_handling =>
+                    {
+                        dest[..expected_size].copy_from_slice(&source[..expected_size]);
+                    }
+                    SizeHandling::Duplicate | SizeHandling::Pad | SizeHandling::Truncate => {
                         return Err(Error::RightSize {
                             chip_type: *chip_type,
                             size: expected_size,
@@ -381,7 +753,7 @@ impl Chip {
                             // Automatically pad a plugin
                             dest[..source.len()].copy_from_slice(source);
                             for byte in &mut dest[source.len()..expected_size] {
-                                *byte = PAD_BLANK_BYTE;
+                                *byte = blank_byte;
                             }
                         } else {
                             return Err(Error::ImageTooSmall {
@@ -410,10 +782,14 @@ impl Chip {
                         }
                     }
                     SizeHandling::Pad => {
-                        // Copy source to dest and pad the rest with 0xAA
+                        // Copy source to dest and pad the rest with blank_byte.
+                        // Not PAD_BLANK_BYTE: an Intel HEX image pads with
+                        // 0xFF, matching the gaps the decoder already filled,
+                        // and a raw binary passes PAD_BLANK_BYTE in as
+                        // blank_byte anyway.
                         dest[..source.len()].copy_from_slice(source);
                         for byte in &mut dest[source.len()..expected_size] {
-                            *byte = PAD_BLANK_BYTE;
+                            *byte = blank_byte;
                         }
                     }
                     SizeHandling::Truncate => {
@@ -431,7 +807,7 @@ impl Chip {
                         // Copy only up to expected size
                         dest[..expected_size].copy_from_slice(&source[..expected_size]);
                     }
-                    _ => {
+                    SizeHandling::None | SizeHandling::Duplicate | SizeHandling::Pad => {
                         return Err(Error::ImageTooLarge {
                             chip_type: *chip_type,
                             image_size: source.len(),
@@ -446,7 +822,7 @@ impl Chip {
             index,
             filename,
             label,
-            chip_type,
+            chip_type_spec.clone(),
             cs_config,
             Some(dest),
             location,
@@ -496,7 +872,7 @@ impl Chip {
     //
     // This transformation ensures that when the hardware reads a byte through its
     // data pins, it gets the correct bit values despite the non-standard connections.
-    fn byte_mangled(byte: u8, board: &Board) -> u8 {
+    pub(crate) fn byte_mangled(byte: u8, board: &Board) -> u8 {
         // Start with 0 result
         let mut result = 0;
 
@@ -573,7 +949,7 @@ impl Chip {
         // We have been passed a physical address based on the hardware pins,
         // so we need to transform it to a logical address based on the Chip
         // image.
-        let num_addr_lines = self.chip_type.num_addr_lines();
+        let num_addr_lines = self.chip_type.resolved().num_addr_lines();
         let transformed_address =
             Self::address_to_logical(phys_pin_to_addr_map, address, board, num_addr_lines);
 
@@ -602,8 +978,9 @@ impl Chip {
     }
 
     // See `sdrr/include/enums.h`
+    #[allow(clippy::wildcard_enum_match_arm)]
     fn chip_type_c_enum_val(&self) -> u8 {
-        match self.chip_type {
+        match self.chip_type.resolved() {
             ChipType::Chip2316 => 0,
             ChipType::Chip2332 => 1,
             ChipType::Chip2364 => 2,
@@ -638,12 +1015,16 @@ impl Chip {
             ChipType::Chip23QL384 => 31,
             ChipType::Chip23C1001 => 32,
             ChipType::Chip27C200 => 33,
+            _ => panic!(
+                "Unsupported Chip type for pre-V0.7.0 firmware {:?}",
+                self.chip_type.resolved()
+            ),
         }
     }
 }
 
 /// Type of Chip set
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ChipSetType {
@@ -691,7 +1072,7 @@ impl ChipSet {
         set_type: ChipSetType,
         serve_alg: ServeAlg,
         chips: Vec<Chip>,
-        firmware_overrides: Option<crate::builder::FirmwareConfig>,
+        firmware_overrides: Option<crate::FirmwareConfig>,
     ) -> Result<Self> {
         // Check some Chips were supplied
         if chips.is_empty() {
@@ -780,17 +1161,22 @@ impl ChipSet {
             for chip in &self.chips {
                 if chip.cs_config.cs1_logic() != first_cs1 {
                     return Err(Error::InconsistentCsLogic {
-                        first: first_cs1,
-                        other: chip.cs_config.cs1_logic(),
+                        first: first_cs1.unwrap(),
+                        other: chip.cs_config.cs1_logic().unwrap(),
                     });
                 }
             }
 
             // For multi-Chip sets we also need to check CS2 and CS3 are ignored
-            // for all Chips
+            // for all Chips.  CE/OE chips (plain CeOe) are skipped here — they
+            // have no cs2/cs3 select concept and their secondary line is handled
+            // via CeOeExplicit when an explicit override is configured.
             #[allow(clippy::collapsible_if)]
             if self.set_type == ChipSetType::Multi {
                 for chip in &self.chips {
+                    if matches!(chip.cs_config, CsConfig::CeOe) {
+                        continue;
+                    }
                     if let Some(cs2) = chip.cs_config.cs2_logic() {
                         if cs2 != CsLogic::Ignore {
                             return Err(Error::InconsistentCsLogic {
@@ -810,16 +1196,17 @@ impl ChipSet {
                 }
             }
 
-            Ok(self.chips[0].cs_config.cs1_logic())
+            Ok(self.chips[0].cs_config.cs1_logic().unwrap())
         }
     }
 
     /// Returns the ChipFunction for this set
     pub fn chip_function(&self) -> ChipFunction {
-        self.chips[0].chip_type.chip_function()
+        self.chips[0].chip_type.resolved().chip_function()
     }
 
     /// Returns the size of the data required for this Chip set, in bytes.
+    #[allow(clippy::wildcard_enum_match_arm)]
     pub fn image_size(&self, board: &Board, fw_version: &FirmwareVersion) -> usize {
         let family = board.mcu_family();
         let num_addr_pins = board.addr_pins().len();
@@ -866,9 +1253,7 @@ impl ChipSet {
                     // the same image size.
                     assert!(num_addr_pins == 18);
                     match chip.chip_type() {
-                        ChipType::Chip2364 | ChipType::Chip231024 => {
-                            2_usize.pow(18)
-                        } // 256KB
+                        ChipType::Chip2364 | ChipType::Chip231024 => 2_usize.pow(18), // 256KB
                         ChipType::Chip23QL384 | ChipType::Chip23QL512 => {
                             // /CE is used as A15 for these chips.  On the fire-28-c,
                             // /CE is before /OE, hence requires 18 bits
@@ -963,11 +1348,11 @@ impl ChipSet {
                 // images even if the CS value is set to inactive
             };
 
-            let num_addr_lines = self.chips[chip_index].chip_type.num_addr_lines();
+            let num_addr_lines = self.chips[chip_index].chip_type.resolved().num_addr_lines();
             let mut phys_pin_to_addr_map = handle_snowflake_chip_types(
                 board,
                 board.phys_pin_to_addr_map(),
-                &self.chips[chip_index].chip_type,
+                &self.chips[chip_index].chip_type.resolved(),
             );
             Self::truncate_phys_pin_to_addr_map(&mut phys_pin_to_addr_map, num_addr_lines);
 
@@ -977,13 +1362,14 @@ impl ChipSet {
                 board,
                 num_addr_lines,
             );
-            if transformed >= self.chips[chip_index].chip_type.size_bytes() {
+            if transformed >= self.chips[chip_index].chip_type.resolved().size_bytes() {
                 // Only valid for non-power-of-2 chip types (e.g. 23QL384 at 48KB), where
                 // the logical address space implied by num_addr_lines exceeds the actual
                 // chip data size.  For power-of-2 types this indicates an internal error.
                 assert!(
                     !self.chips[chip_index]
                         .chip_type
+                        .resolved()
                         .size_bytes()
                         .is_power_of_two(),
                     "Transformed address {} out of bounds for power-of-2 chip type - internal error",
@@ -1005,21 +1391,22 @@ impl ChipSet {
             // Get the physical addr and data pin mappings.  We have to
             // retrieve this for each Chip in the set, as each Chip may be
             // a different type (size).
-            let num_addr_lines = chip_in_set.chip_type.num_addr_lines();
+            let num_addr_lines = chip_in_set.chip_type.resolved().num_addr_lines();
             let mut phys_pin_to_addr_map = handle_snowflake_chip_types(
                 board,
                 board.phys_pin_to_addr_map(),
-                &chip_in_set.chip_type,
+                &chip_in_set.chip_type.resolved(),
             );
             Self::truncate_phys_pin_to_addr_map(&mut phys_pin_to_addr_map, num_addr_lines);
 
             // All of CS1/X1/X2 have to have the same active low/high status
             // so we retrieve that from CS1 (as X1/X2 aren't specifically
             // configured in the chip sets).
-            let pins_active_high = chip_in_set.cs_config.cs1_logic() == CsLogic::ActiveHigh;
+            let pins_active_high =
+                chip_in_set.cs_config.cs1_logic().unwrap() == CsLogic::ActiveHigh;
 
             // Get the CS pin that controls this chip's selection
-            let cs_pin = board.cs_bit_for_chip_in_set(chip_in_set.chip_type, index);
+            let cs_pin = board.cs_bit_for_chip_in_set(chip_in_set.chip_type.resolved(), index);
             assert!(cs_pin <= 15, "Internal error: CS pin is > 15");
 
             fn is_pin_active(
@@ -1048,7 +1435,7 @@ impl ChipSet {
 
             if cs_active {
                 // Verify exactly one CS pin is active
-                let cs1_pin = board.bit_cs1(chip_in_set.chip_type);
+                let cs1_pin = board.bit_cs1(chip_in_set.chip_type.resolved());
                 let x1_pin = board.bit_x1();
                 let x2_pin = board.bit_x2();
 
@@ -1079,7 +1466,13 @@ impl ChipSet {
         board: &Board,
     ) -> bool {
         let cs_config = &chip_in_set.cs_config;
-        let chip_type = chip_in_set.chip_type;
+        let chip_type = chip_in_set.chip_type.resolved();
+
+        // CE/OE chips don't have cs2/cs3 selects — no additional requirements
+        // to check beyond the primary CS which is already verified by the caller.
+        if matches!(cs_config, CsConfig::CeOe | CsConfig::CeOeExplicit { .. }) {
+            return true;
+        }
 
         // Check CS2 if specified
         if let Some(cs2_logic) = cs_config.cs2_logic() {
@@ -1131,6 +1524,7 @@ impl ChipSet {
     }
 
     #[allow(dead_code)]
+    #[allow(clippy::wildcard_enum_match_arm)]
     fn mask_cs_selection_bits(&self, address: usize, chip_type: ChipType, board: &Board) -> usize {
         let mut masked_address = address;
 
@@ -1239,11 +1633,11 @@ impl ChipSet {
             offset += 1;
 
             // Write the CS states
-            let is_plugin = chip.chip_type.chip_function().is_plugin();
+            let is_plugin = chip.chip_type.resolved().chip_function().is_plugin();
             buf[offset] = if is_plugin {
                 CsLogic::Ignore.c_enum_val()
             } else {
-                chip.cs_config.cs1_logic().c_enum_val()
+                chip.cs_config.cs1_logic().unwrap().c_enum_val()
             };
             offset += 1;
             buf[offset] = if is_plugin {
@@ -1424,6 +1818,7 @@ impl ChipSet {
 // 231024.  In this case, we want to throw away the first two address lines,
 // as these are CS lines, which aren't used as address lines, except for the
 // 231024.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn handle_snowflake_chip_types(
     board: &Board,
     phys_pin_to_addr_map: &[Option<usize>],
@@ -1521,7 +1916,7 @@ fn handle_snowflake_chip_types(
                             a16_index
                         );
                     }
-                },
+                }
                 Board::Fire32B => {
                     if a16_index == 2 {
                         // Remove two entries of pin map
@@ -1572,7 +1967,7 @@ fn handle_snowflake_chip_types(
         if !matches!(board, Board::Fire32B) {
             panic!("SST39SF040 is not supported on fire-32-a - use 27C040 with a shim");
         }
-        
+
         // On fire-32-b, regular A18 is the first address pin.  Remove it
         modified_map.remove(0);
 
@@ -1580,4 +1975,61 @@ fn handle_snowflake_chip_types(
         modified_map.push(Some(18));
     }
     modified_map
+}
+
+#[cfg(test)]
+mod value_spelling_tests {
+    use super::*;
+
+    /// Every value the CLI advertises parses back to the variant it names.
+    ///
+    /// `CsLogic` had two parsers - this one and a copy in the CLI - accepting
+    /// different subsets, so `active_low` worked only on the command line and
+    /// `ignore` only in a config file. There is now one parser; this pins the
+    /// round trip so a new variant cannot be added to the advertised list
+    /// without being parseable.
+    #[test]
+    fn every_advertised_cs_value_parses_back_to_itself() {
+        for value in CsLogic::supported_values() {
+            assert_eq!(
+                CsLogic::try_from_str(value.name()),
+                Some(*value),
+                "{} does not round trip",
+                value.name()
+            );
+        }
+    }
+
+    /// The config file's snake_case spellings and the `0`/`1` shorthand all
+    /// reach the same variants as the CLI's kebab-case ones.
+    #[test]
+    fn cs_values_accept_config_and_shorthand_spellings() {
+        for (s, expected) in [
+            ("active_low", CsLogic::ActiveLow),
+            ("active-low", CsLogic::ActiveLow),
+            ("0", CsLogic::ActiveLow),
+            ("active_high", CsLogic::ActiveHigh),
+            ("active-high", CsLogic::ActiveHigh),
+            ("1", CsLogic::ActiveHigh),
+            ("ignore", CsLogic::Ignore),
+        ] {
+            assert_eq!(CsLogic::try_from_str(s), Some(expected), "{s}");
+        }
+        assert_eq!(CsLogic::try_from_str("active low"), None);
+        assert_eq!(CsLogic::try_from_str("sideways"), None);
+    }
+
+    /// The same round trip for image formats, whose `--from`/`--to` values are
+    /// built from `supported_values()`.
+    #[test]
+    fn every_advertised_format_parses_back_to_itself() {
+        for value in FileFormat::supported_values() {
+            assert_eq!(
+                FileFormat::try_from_str(value.name()),
+                Some(*value),
+                "{} does not round trip",
+                value.name()
+            );
+        }
+    }
 }

@@ -5,7 +5,6 @@
 //! Shared error type for the One ROM CLI library.
 
 use onerom_config::fw::FirmwareVersion;
-use sdrr_fw_parser::SdrrRomType;
 
 use crate::plugin::{PluginType, PluginVersion};
 
@@ -31,6 +30,19 @@ pub enum Error {
 
     #[error("Unknown board type: {0}\n  Known board types: {1}")]
     InvalidBoard(String, String),
+
+    /// A board the CLI can describe but cannot act on.
+    ///
+    /// Every firmware and device path here is RP2350-only - images are composed
+    /// for [`Variant::RP2350`](onerom_config::mcu::Variant) and devices are
+    /// reached over picoboot - so an Ice (STM32) board has no image to build and
+    /// no bootloader to talk to. Saying so here beats letting it surface as a
+    /// missing-release error from the manifest lookup, which describes a symptom
+    /// rather than the cause.
+    #[error(
+        "Board '{0}' is an Ice (STM32) board, which this command does not support.\n  This command supports Fire (RP2350) boards only."
+    )]
+    IceBoardUnsupported(String),
 
     #[error(
         "You must not specify both --serial and --board together.\n  If --serial is specified, this is used to determine the board type automatically if possible."
@@ -68,10 +80,23 @@ pub enum Error {
     #[error(
         "The operation attempted to access past the end of a live ROM image.\n  The {0} size is {1} bytes"
     )]
-    LiveOutOfBounds(SdrrRomType, usize),
+    LiveOutOfBounds(String, usize),
 
     #[error("Cannot determine the board type.\n  Either --board or --serial must be specified.")]
     NoBoardOrDevice,
+
+    /// A device-oriented view could not identify the connected One ROM's board.
+    ///
+    /// Reached only with a One ROM *connected*: the caller checks for a device
+    /// first, so a missing one is [`Error::NoDevice`]. What is left is a One ROM
+    /// reporting a board type this build does not recognise, which the
+    /// command's own `--board` override exists to answer. Unlike
+    /// [`Error::NoBoardOrDevice`] there is no point offering `--serial`, which
+    /// would only select a different One ROM.
+    #[error(
+        "Cannot determine the board type.\n  The connected One ROM reports a board type this build does not recognise.\n  Name it with --board, or use 'onerom board {0} --board <board>' to draw a\n  board by name."
+    )]
+    NoDeviceForBoardView(String),
 
     #[error("Specified version '{0}' not found.\n  Available releases: {1}")]
     VersionNotFound(String, String),
@@ -117,7 +142,7 @@ pub enum Error {
     #[error("Unsupported chip type '{0}'.\n  Supported types for this board: {1}")]
     UnsupportedChipType(String, String),
 
-    #[error("This board does not support chip types {1}.\n  Supported types: {2}")]
+    #[error("This board cannot serve chip types {1}.\n  Supported types: {2}")]
     UnsupportedBoardChipType(String, String, String),
 
     #[error(
@@ -204,11 +229,91 @@ pub enum Error {
         "ROM image '{0}' has an odd number of bytes ({1}).\n  Byte swapping requires an even-length input file."
     )]
     OddLengthImage(String, usize),
+
+    #[error(
+        "Firmware board type '{0}' does not match the expected board type '{1}'.\n  Use --force to override."
+    )]
+    BoardMismatch(String, String),
+
+    #[error(
+        "{0}\n  Use --force to program it anyway - for example when the first slot holds a bootloader that selects the others itself."
+    )]
+    TurboBootMultiSlot(onerom_gen::Error),
+
+    #[error(
+        "Plugin '{0}' version '{1}' is not compatible with firmware {2} or later.\n  The selected firmware version is {3}."
+    )]
+    PluginIncompatibleNewer(String, PluginVersion, FirmwareVersion, FirmwareVersion),
+
+    #[error("Failed to decode Intel HEX from '{0}':\n  {1}")]
+    IhexDecode(String, String),
+
+    #[error("Failed to transform ROM image '{0}':\n  {1}")]
+    ImageTransform(String, String),
+
+    #[error("Invalid --pin value '{0}':\n  {1}")]
+    InvalidPin(String, String),
+
+    #[error(
+        "This One ROM's USB system plugin predates GPIO control.\n  {0}\n  Reprogram it with the v0.7.1 or later USB system plugin, for example:\n    onerom program --config <your config> --plugin usb"
+    )]
+    PluginTooOldForGpio(String),
+
+    #[error(
+        "This One ROM's firmware predates GPIO control.\n  {0}\n  Its USB system plugin supports GPIO control but the firmware beneath it does not.\n  Update the device to One ROM firmware v0.7.1 or later."
+    )]
+    FirmwareTooOldForGpio(String),
+
+    #[error(
+        "This One ROM cannot hold a GPIO for a bounded period.\n  {0}\n  Update the device to One ROM firmware v0.7.1 or later, or omit --hold."
+    )]
+    GpioHoldUnsupported(String),
+
+    #[error("A hold of {0}ms is longer than this One ROM allows.\n  Its maximum is {1}ms.")]
+    GpioHoldTooLong(u32, u32),
+
+    #[error("This One ROM has no GPIO{0}.\n  It reports {1} GPIOs, GPIO0 upwards.")]
+    GpioOutOfRange(u8, u8),
+
+    #[error(
+        "GPIO{0} is in use by One ROM.\n  Use --force to drive it anyway - see 'onerom inspect gpio' for what it is doing."
+    )]
+    GpioInUse(u8),
+
+    #[error(
+        "This One ROM rejected the request for GPIO{0} as invalid.\n  This is likely a bug.  Please report it."
+    )]
+    GpioRejected(u8),
+
+    #[error("This One ROM returned a response that could not be decoded:\n  {0}")]
+    PicobootxDecode(String),
+
+    #[error(
+        "This One ROM is not running, so its GPIOs cannot be read or driven.\n  {0}\n  A stopped One ROM sits in the RP2350 bootloader, where One ROM's own\n  command handler is not running.\n  Start it with 'onerom control reboot --running'."
+    )]
+    DeviceNotRunning(String),
+
+    #[error("{0} is in use by One ROM: {1}.\n  {2}\n  {3}")]
+    GpioInUseNamed(String, String, String, String),
+
+    #[error(
+        "This One ROM is already holding as many GPIOs as it can.\n  Release one first - drive it with no --hold, or wait for a hold to expire."
+    )]
+    GpioNoHoldSlot,
 }
 
 impl Error {
     pub fn io(path: impl AsRef<std::path::Path>, e: std::io::Error) -> Self {
         Self::Io(format!("{}: {e}", path.as_ref().display()))
+    }
+}
+
+/// Phase 2 left `DecodeError` local to `picobootx.rs` so that module stays a
+/// pure description of the wire format. This is where a wire response the host
+/// could not make sense of becomes something a user sees.
+impl From<crate::picobootx::DecodeError> for Error {
+    fn from(e: crate::picobootx::DecodeError) -> Self {
+        Self::PicobootxDecode(e.to_string())
     }
 }
 
@@ -221,5 +326,102 @@ impl From<onerom_fw::Error> for Error {
 impl From<onerom_config::Error> for Error {
     fn from(e: onerom_config::Error) -> Self {
         Self::Other(format!("{e}"))
+    }
+}
+
+impl From<onerom_app::PluginError> for Error {
+    fn from(p: onerom_app::PluginError) -> Self {
+        use onerom_app::PluginError as P;
+        match p {
+            P::DuplicatePlugin(t) => Error::DuplicatePlugin(t),
+            P::UserPluginWithoutSystem => Error::UserPluginWithoutSystem,
+            P::TooLarge(size, max) => Error::PluginTooLarge(size, max),
+            P::NotFound(name) => Error::PluginNotFound(name),
+            P::VersionNotFound(name, v) => Error::PluginVersionNotFound(name, v.to_string()),
+            P::Incompatible {
+                name,
+                version,
+                min_fw,
+                fw,
+            } => Error::PluginIncompatible(name, version, min_fw, fw),
+            P::IncompatibleNewer {
+                name,
+                version,
+                from,
+                fw,
+            } => Error::PluginIncompatibleNewer(name, version, from, fw),
+            P::BinaryTooSmall(src, actual, min) => Error::PluginBinaryTooSmall(src, actual, min),
+            P::InvalidMagic(src, got, expected) => Error::PluginInvalidMagic(src, got, expected),
+            P::TypeMismatch(src, expected, got) => {
+                Error::PluginTypeMismatch(src, expected.to_string(), got.to_string())
+            }
+            P::VersionMismatch(name, manifest, header) => {
+                Error::PluginVersionMismatch(name, manifest, header)
+            }
+            P::Sha256Mismatch {
+                binary,
+                expected,
+                got,
+            } => Error::PluginSha256Mismatch(binary, expected, got),
+            P::PioNotSupported(src) => Error::PluginPioNotSupported(src),
+            P::UnknownBinaryType(src, v) => Error::PluginUnknownBinaryType(src, v),
+            P::UnknownManifestType(name, ty) => Error::PluginUnknownManifestType(name, ty),
+            P::SpecSyntax(msg) => Error::InvalidArgument("--plugin".to_string(), msg),
+            P::ManifestJson(url, detail) => Error::Json(url, detail),
+        }
+    }
+}
+
+impl From<onerom_app::Error<onerom_fw::Error>> for Error {
+    fn from(e: onerom_app::Error<onerom_fw::Error>) -> Self {
+        match e {
+            // Fetch failures carry onerom-fw's own error; map it as onerom-fw
+            // errors are mapped elsewhere in the CLI (via From<onerom_fw::Error>).
+            onerom_app::Error::Fetch { error, .. } => error.into(),
+            onerom_app::Error::Plugin(p) => p.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The board-view error offers only advice that would actually work.
+    ///
+    /// Both routes it names have to be spelled the way the CLI accepts them,
+    /// and both have to be reachable from where the user is: a One ROM *is*
+    /// connected (the caller has already checked), it is just one whose board
+    /// this build does not know. So `--board` is the fix, and `--serial` -
+    /// which the shared [`Error::NoBoardOrDevice`] offers - would only pick a
+    /// different One ROM.
+    ///
+    /// This is easy to break by renaming an argument and not the message, which
+    /// is exactly what happened when `board header` took its board
+    /// positionally.
+    #[test]
+    fn board_view_error_offers_only_advice_that_works() {
+        for view in ["header", "socket"] {
+            let msg = Error::NoDeviceForBoardView(view.to_string()).to_string();
+            // The override on this very command, which resolves the situation.
+            assert!(msg.contains("--board"), "{view}: {msg}");
+            // The escape hatch, spelled as the `board` command actually parses
+            // it - not the positional form it once took.
+            assert!(
+                msg.contains(&format!("onerom board {view} --board <board>")),
+                "{view}: {msg}"
+            );
+            // Would only select a different One ROM, not name this one's board.
+            assert!(!msg.contains("--serial"), "{view}: {msg}");
+        }
+    }
+
+    /// The shared error still gives the `--board` advice, which is correct for
+    /// the commands that have one (`program`, `firmware build`, `board ...`).
+    #[test]
+    fn shared_no_board_error_still_advises_board_or_serial() {
+        let msg = Error::NoBoardOrDevice.to_string();
+        assert!(msg.contains("--board"), "{msg}");
+        assert!(msg.contains("--serial"), "{msg}");
     }
 }

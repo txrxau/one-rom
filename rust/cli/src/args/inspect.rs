@@ -5,9 +5,10 @@
 //! Argument definitions for `onerom inspect`.
 
 use crate::args::CommandTrait;
-use crate::utils::parse_u32;
+use crate::utils::{parse_u8, parse_u32};
 use clap::{Args, Subcommand};
 use enum_dispatch::enum_dispatch;
+use onerom_cli::pin::{Pin, parse_pin};
 
 #[derive(Debug, Args)]
 pub struct InspectArgs {
@@ -83,14 +84,59 @@ pub enum InspectCommands {
     )]
     Peek(InspectPeekArgs),
 
-    /// Read the current state of the One ROM GPIO pins (not yet supported).
+    /// Show what every One ROM GPIO is, and what it is doing.
     ///
-    /// Displays the direction and logic level of each exposed GPIO pin.
+    /// One row per MCU GPIO: everything the GPIO is - its signal under the ROM
+    /// currently being served, the board peripheral it drives, the header pad
+    /// it surfaces on - plus its direction and level, whether it is
+    /// 5V-tolerant, and what One ROM itself is using it for.
     ///
-    /// Example:
+    /// Only GPIOs connected to something are listed; --all adds the rest.
+    /// --verbose adds a legend explaining where each column comes from.
+    ///
+    /// The device reports only a coarse category - free, read by serving,
+    /// driven by serving, or a system pin - along with the level and
+    /// direction. Every name in the table comes from this CLI's board and chip
+    /// metadata, not from the device.
+    ///
+    /// Examples:
     ///
     ///   onerom inspect gpio
+    ///
+    ///   onerom inspect gpio --all
+    ///
+    ///   onerom inspect gpio --pin gpio9
+    ///
+    ///   onerom inspect gpio --pin x1
     Gpio(InspectGpioArgs),
+
+    /// Draw the connected One ROM's pin (jumper / programming) header as ASCII.
+    ///
+    /// Shows the 2xN header along the board's top edge, pad by pad, with the
+    /// MCU GPIO behind each image-select and X pad and — on RP2350 (Fire)
+    /// boards — whether that GPIO is 5V-tolerant or 3.3V-only (an ADC pin). The
+    /// board is inferred from the connected device, or taken from --board.
+    ///
+    /// Examples:
+    ///
+    ///   onerom inspect header
+    ///
+    ///   onerom inspect header --board fire-24-f
+    Header(InspectHeaderArgs),
+
+    /// Draw the connected One ROM's ROM socket pinout as ASCII.
+    ///
+    /// Without --chip-type each socket pin is labelled with the GPIO(s) behind it;
+    /// with --chip-type <chip> the pins show that ROM's functions (address / data /
+    /// chip-select / …), and --gpio overlays both. The board is inferred from
+    /// the connected device, or taken from --board.
+    ///
+    /// Examples:
+    ///
+    ///   onerom inspect socket
+    ///
+    ///   onerom inspect socket --chip-type 2364 --gpio
+    Socket(InspectSocketArgs),
 }
 
 #[derive(Debug, Args)]
@@ -126,12 +172,12 @@ impl CommandTrait for InspectSlotsArgs {
 
 #[derive(Debug, Args)]
 pub struct InspectImageArgs {
-    /// Slot index to read (0-15). Reads the currently active slot if omitted.
-    #[arg(long, short='l', value_name = "INDEX", value_parser = parse_u32)]
+    /// Slot index to read. Reads the currently active slot if omitted.
+    #[arg(long, value_name = "INDEX", value_parser = parse_u8)]
     pub slot: Option<u8>,
 
     /// Save the image data to this file.
-    #[arg(long, short, visible_alias = "out", value_name = "FILE", value_parser = parse_u32)]
+    #[arg(long, short, visible_alias = "out", value_name = "FILE")]
     pub output: Option<String>,
 }
 
@@ -240,12 +286,74 @@ impl CommandTrait for InspectPeekMemoryArgs {
 
 #[derive(Debug, Args)]
 pub struct InspectGpioArgs {
-    /// Show only this specific pin.
-    #[arg(long, value_name = "PIN")]
-    pub pin: Option<u8>,
+    /// Show only this pin: an MCU GPIO written gpio<N>, or a header pad name
+    /// (sel_a..sel_e, x1, x2).
+    ///
+    /// A bare number is rejected - see 'onerom inspect header' for the GPIO
+    /// behind each header pad.
+    #[arg(long, value_name = "PIN", value_parser = parse_pin)]
+    pub pin: Option<Pin>,
+
+    /// Board type, overriding what the connected One ROM reports.
+    ///
+    /// Only needed to resolve a header pad name on a One ROM whose board type
+    /// this build does not recognise. A GPIO named as gpio<N> needs no board.
+    #[arg(long, short, value_name = "BOARD")]
+    pub board: Option<String>,
+
+    /// Also show GPIOs with no function at all.
+    ///
+    /// By default only GPIOs connected to something - a ROM socket signal, a
+    /// board peripheral or a header pad - are listed. On a 48-GPIO board a
+    /// quarter of them are connected to nothing, and listing them buries the
+    /// rest.
+    #[arg(long, short, conflicts_with = "pin")]
+    pub all: bool,
 }
 
 impl CommandTrait for InspectGpioArgs {
+    fn requires_device(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct InspectHeaderArgs {
+    /// Board type, overriding what the connected One ROM reports.
+    ///
+    /// Only needed on a One ROM whose board type this build does not
+    /// recognise. To draw a board by name with no One ROM connected, use
+    /// 'onerom board header --board <board>'.
+    #[arg(long, short, value_name = "BOARD")]
+    pub board: Option<String>,
+}
+
+impl CommandTrait for InspectHeaderArgs {
+    fn requires_device(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct InspectSocketArgs {
+    /// Board type, overriding what the connected One ROM reports.
+    ///
+    /// Only needed on a One ROM whose board type this build does not
+    /// recognise. To draw a board by name with no One ROM connected, use
+    /// 'onerom board socket --board <board>'.
+    #[arg(long, short, value_name = "BOARD")]
+    pub board: Option<String>,
+
+    /// Show ROM pin functions for this chip type (e.g. 2364) instead of GPIOs.
+    #[arg(long, short = 'c', value_name = "CHIP")]
+    pub chip_type: Option<String>,
+
+    /// Overlay the GPIO(s) behind each pin onto the --chip-type function view.
+    #[arg(long, requires = "chip_type")]
+    pub gpio: bool,
+}
+
+impl CommandTrait for InspectSocketArgs {
     fn requires_device(&self) -> bool {
         true
     }
